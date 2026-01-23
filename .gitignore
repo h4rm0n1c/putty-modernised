@@ -140,3 +140,6 @@ Makefile
 /windows/*.msi
 /windows/*.wixobj
 /windows/*.wixpdb
+
+# local build dirs
+/build-*/
