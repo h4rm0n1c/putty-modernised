@@ -3234,6 +3234,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
          */
         noise_ultralight(NOISE_SOURCE_KEY, lParam);
 
+        /* Swallow F13–F24 completely */
+        if (wParam >= VK_F13 && wParam <= VK_F24)
+            return 0;
+
+
+
         /*
          * We don't do TranslateMessage since it disassociates the
          * resulting CHAR message from the KEYDOWN that sparked it,
