@@ -1,3 +1,11 @@
+FORK EXPLAINER: This fork disables the input handling for the high F keys,
+F13 to F24, why?
+because I use buttons in that range for push to talk and other out of band
+type signalling and it's really annoying when putty types stuff when I didn't
+intend it to type anything. This is useful for streaming to prevent accidents and surprises.
+I built my own copy with mingw on linux and tested it on windows 10, it was 3 lines of code to implement.
+
+
 PuTTY source code README
 ========================
 
