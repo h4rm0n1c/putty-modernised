@@ -1,6 +1,6 @@
 FORK EXPLAINER:
 This fork disables Putty's input handling for the high F keys,
-F13 to F24 on windows, Putty will ignore these keys entirely in this build.
+F13 to F24, on Microsoft Windows.
 Why?
 because I use buttons in that range for push to talk and other out of band
 type signalling and it's really annoying when putty types stuff when I
