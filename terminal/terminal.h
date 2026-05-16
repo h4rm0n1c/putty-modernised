@@ -182,7 +182,7 @@ struct terminal_tag {
 #define ANSI(x,y)       ((x)+((y)*256))
 #define ANSI_QUE(x)     ANSI(x,1)
 
-#define OSC_STR_MAX 2048
+#define OSC_STR_MAX 262144
     bool osc_is_apc;
     int osc_strlen;
     char osc_string[OSC_STR_MAX + 1];
@@ -332,6 +332,7 @@ struct terminal_tag {
     bool no_remote_charset;
     bool no_remote_resize;
     bool no_remote_wintitle;
+    bool osc52_clipboard;
     bool no_remote_clearscroll;
     bool rawcnp;
     bool utf8linedraw;

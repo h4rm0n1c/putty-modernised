@@ -12,6 +12,7 @@
 #include <assert.h>
 #include "putty.h"
 #include "terminal.h"
+#include <winnls.h>
 
 #define VT52_PLUS
 
@@ -1663,6 +1664,7 @@ static void term_copy_stuff_from_conf(Terminal *term)
     term->no_remote_charset = conf_get_bool(term->conf, CONF_no_remote_charset);
     term->no_remote_resize = conf_get_bool(term->conf, CONF_no_remote_resize);
     term->no_remote_wintitle = conf_get_bool(term->conf, CONF_no_remote_wintitle);
+    term->osc52_clipboard = conf_get_bool(term->conf, CONF_osc52_clipboard);
     term->no_remote_clearscroll = conf_get_bool(term->conf, CONF_no_remote_clearscroll);
     term->rawcnp = conf_get_bool(term->conf, CONF_rawcnp);
     term->utf8linedraw = conf_get_bool(term->conf, CONF_utf8linedraw);
@@ -3184,6 +3186,66 @@ static void toggle_mode(Terminal *term, int mode, int query, bool state)
     }
 }
 
+static void do_osc52_clipboard(Terminal *term)
+{
+    const char *p = term->osc_string;
+    size_t len = term->osc_strlen;
+    const char *semicolon;
+    const char *target, *data;
+    size_t target_len, data_len;
+    strbuf *decoded;
+    int wide_len;
+    wchar_t *wide;
+
+    if (!term->osc52_clipboard)
+        return;
+
+    semicolon = memchr(p, ';', len);
+    if (!semicolon)
+        return;
+
+    target = p;
+    target_len = semicolon - p;
+    data = semicolon + 1;
+    data_len = len - target_len - 1;
+
+    if (data_len == 1 && *data == '?')
+        return;
+
+    if (target_len > 0) {
+        bool valid = false;
+        for (size_t i = 0; i < target_len; i++) {
+            if (target[i] == 'c') {
+                valid = true;
+                break;
+            }
+        }
+        if (!valid)
+            return;
+    }
+
+    ptrlen data_pl = make_ptrlen(data, data_len);
+    if (!base64_valid(data_pl))
+        return;
+
+    decoded = base64_decode_sb(data_pl);
+    if (!decoded)
+        return;
+
+    wide_len = MultiByteToWideChar(CP_UTF8, 0, decoded->s, decoded->len,
+                                   NULL, 0);
+    wide = snewn(wide_len + 1, wchar_t);
+    MultiByteToWideChar(CP_UTF8, 0, decoded->s, decoded->len,
+                        wide, wide_len);
+
+    if (wide_len > 0)
+        win_clip_write(term->win, CLIP_SYSTEM, wide,
+                       NULL, NULL, wide_len, false);
+
+    sfree(wide);
+    strbuf_free(decoded);
+}
+
 /*
  * Process an OSC sequence: set window title or icon name.
  */
@@ -3240,6 +3302,9 @@ static void do_osc(Terminal *term)
                     sfree(reply_buf);
                 }
             }
+            break;
+          case 52:
+            do_osc52_clipboard(term);
             break;
         }
     }

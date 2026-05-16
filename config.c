@@ -2203,6 +2203,9 @@ void setup_config_box(struct controlbox *b, bool midsession,
     ctrl_checkbox(s, "Disable bracketed paste mode",
                   'p', HELPCTX(features_bracketed_paste), conf_checkbox_handler,
                   I(CONF_no_bracketed_paste));
+    ctrl_checkbox(s, "Allow remote clipboard writes (OSC 52)", '5',
+                  HELPCTX(features_osc52_clipboard),
+                  conf_checkbox_handler, I(CONF_osc52_clipboard));
 
     /*
      * The Window panel.

@@ -589,6 +589,11 @@ CONF_OPTION(no_dbackspace, /* disable destructive backspace */
     DEFAULT_BOOL(false),
     SAVE_KEYWORD("NoDBackspace"),
 )
+CONF_OPTION(osc52_clipboard, /* enable OSC 52 clipboard writes */
+    VALUE_TYPE(BOOL),
+    DEFAULT_BOOL(true),
+    SAVE_KEYWORD("OSC52Clipboard"),
+)
 CONF_OPTION(no_remote_charset, /* disable remote charset config */
     VALUE_TYPE(BOOL),
     DEFAULT_BOOL(false),
