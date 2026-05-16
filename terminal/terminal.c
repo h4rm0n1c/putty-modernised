@@ -3194,7 +3194,7 @@ static void do_osc52_clipboard(Terminal *term)
     const char *target, *data;
     size_t target_len, data_len;
     strbuf *decoded;
-    int wide_len;
+    int wide_len, converted_len;
     wchar_t *wide;
 
     if (!term->osc52_clipboard)
@@ -3232,15 +3232,30 @@ static void do_osc52_clipboard(Terminal *term)
     if (!decoded)
         return;
 
-    wide_len = MultiByteToWideChar(CP_UTF8, 0, decoded->s, decoded->len,
-                                   NULL, 0);
-    wide = snewn(wide_len + 1, wchar_t);
-    MultiByteToWideChar(CP_UTF8, 0, decoded->s, decoded->len,
-                        wide, wide_len);
+    if (decoded->len > INT_MAX) {
+        strbuf_free(decoded);
+        return;
+    }
 
-    if (wide_len > 0)
-        win_clip_write(term->win, CLIP_SYSTEM, wide,
-                       NULL, NULL, wide_len, false);
+    wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                   decoded->s, decoded->len, NULL, 0);
+    if (wide_len <= 0) {
+        strbuf_free(decoded);
+        return;
+    }
+
+    wide = snewn(wide_len, wchar_t);
+    converted_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                        decoded->s, decoded->len,
+                                        wide, wide_len);
+    if (converted_len != wide_len) {
+        sfree(wide);
+        strbuf_free(decoded);
+        return;
+    }
+
+    win_clip_write(term->win, CLIP_SYSTEM, wide,
+                   NULL, NULL, wide_len, false);
 
     sfree(wide);
     strbuf_free(decoded);

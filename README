@@ -10,6 +10,26 @@ accidents and surprises.
 I built my own copy with mingw on linux and tested it on windows 10
 it was 3 lines of code to implement.
 
+OSC 52 clipboard support:
+This fork supports OSC52 clipboard writes. When enabled (Terminal > Features
+> "Allow remote clipboard writes (OSC 52)"), programs on the remote host can
+set your local Windows clipboard by emitting OSC 52 escape sequences.
+
+Clipboard read/query (OSC 52 ; c ; ?) is intentionally not implemented, so
+the remote host cannot request your local clipboard contents. Only the
+system clipboard target ('c') and empty target are accepted; primary
+selection and cut-buffer targets are silently ignored.
+
+Leave this disabled for untrusted hosts if you do not want remote programs
+to modify your local clipboard. Default is enabled for convenience.
+
+Attribution: OSC52 support in this fork was implemented by studying the
+behaviour and structure of existing open-source terminal emulators,
+especially mintty, Alacritty, WezTerm, and kitty. The implementation is
+original to this fork and reuses PuTTY's existing parser and clipboard
+abstractions, but the design deliberately follows established
+terminal-emulator behaviour for OSC52 clipboard handling.
+
 
 PuTTY source code README
 ========================
