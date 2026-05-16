@@ -143,3 +143,6 @@ Makefile
 
 # local build dirs
 /build-*/
+
+# Local CMake toolchain file used by old build cache
+/toolchain-mingw64.cmake
