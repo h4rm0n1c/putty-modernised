@@ -10,6 +10,14 @@ accidents and surprises.
 I built my own copy with mingw on linux and tested it on windows 10
 it was 3 lines of code to implement.
 
+Known local build command for this fork:
+
+  cmake --build build-win64 --target putty
+
+Expected output binary:
+
+  build-win64/putty.exe
+
 OSC 52 clipboard support:
 This fork supports OSC52 clipboard writes. When enabled (Terminal > Features
 > "Allow remote clipboard writes (OSC 52)"), programs on the remote host can
@@ -22,6 +30,20 @@ selection and cut-buffer targets are silently ignored.
 
 Leave this disabled for untrusted hosts if you do not want remote programs
 to modify your local clipboard. Default is enabled for convenience.
+
+Tested workflow:
+
+  remote TUI/app copies out -> OSC52 write -> local Windows clipboard
+  local Windows clipboard pastes in -> normal PuTTY paste / bracketed paste
+
+This has been tested with OpenCode: selecting text in the remote TUI emits
+OSC52 on mouse-up and updates the local Windows clipboard. Paste back into
+the remote session is still the normal user-triggered PuTTY paste path, e.g.
+Shift+Insert or right-click paste.
+
+Manual OSC52 tests are in:
+
+  contrib/test-osc52.sh
 
 Attribution: OSC52 support in this fork was implemented by studying the
 behaviour and structure of existing open-source terminal emulators,
