@@ -355,6 +355,8 @@ struct terminal_tag {
 
     /* OSC 8 hyperlink support */
     int current_hyperlink_id;
+    char *current_hyperlink_id_str;
+    char *current_hyperlink_url;
 
     struct hyperlink_storage {
         unsigned short id;
