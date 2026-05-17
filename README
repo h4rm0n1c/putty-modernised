@@ -52,6 +52,14 @@ original to this fork and reuses PuTTY's existing parser and clipboard
 abstractions, but the design deliberately follows established
 terminal-emulator behaviour for OSC52 clipboard handling.
 
+Clickable URL support:
+This fork detects visible http:// and https:// URLs in terminal output.
+Detected URLs are underlined and can be opened with Ctrl+LeftClick.
+
+Only URLs visibly present in the terminal are opened.
+OSC8 hidden-target hyperlinks are not supported.
+file:// and custom URI schemes are not opened.
+
 
 PuTTY source code README
 ========================

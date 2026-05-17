@@ -6076,6 +6076,172 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
     return lchars;
 }
 
+/*
+ * Helpers for clickable visible URL support.
+ *
+ * Detect literal http:// and https:// URLs visible in terminal output.
+ */
+
+static bool url_chr_eq(unsigned long chr, unsigned char ascii)
+{
+    unsigned char c = chr & 0xFF;
+    if (c == ascii) return true;
+    if (ascii >= 'a' && ascii <= 'z' && c >= 'A' && c <= 'Z' &&
+        c == ascii - 32) return true;
+    if (ascii >= 'A' && ascii <= 'Z' && c >= 'a' && c <= 'z' &&
+        c == ascii + 32) return true;
+    return false;
+}
+
+static bool url_is_terminator(unsigned long chr)
+{
+    if (chr == UCSWIDE) return false;
+    unsigned long c = chr;
+    if ((c & CSET_MASK) != 0) c &= 0xFF;
+    if (c > 0x7F) return false;
+    return c == ' ' || c == '\t' ||
+           c == '"' || c == '\'' || c == '`' ||
+           c == '<' || c == '>' ||
+           c <= 0x1F || c == 0x7F;
+}
+
+static bool url_has_scheme_at(termchar *chars, int cols, int pos)
+{
+    if (pos + 7 <= cols &&
+        url_chr_eq(chars[pos].chr,   'h') &&
+        url_chr_eq(chars[pos+1].chr, 't') &&
+        url_chr_eq(chars[pos+2].chr, 't') &&
+        url_chr_eq(chars[pos+3].chr, 'p') &&
+        url_chr_eq(chars[pos+4].chr, ':') &&
+        url_chr_eq(chars[pos+5].chr, '/') &&
+        url_chr_eq(chars[pos+6].chr, '/'))
+        return true;
+    if (pos + 8 <= cols &&
+        url_chr_eq(chars[pos].chr,   'h') &&
+        url_chr_eq(chars[pos+1].chr, 't') &&
+        url_chr_eq(chars[pos+2].chr, 't') &&
+        url_chr_eq(chars[pos+3].chr, 'p') &&
+        url_chr_eq(chars[pos+4].chr, 's') &&
+        url_chr_eq(chars[pos+5].chr, ':') &&
+        url_chr_eq(chars[pos+6].chr, '/') &&
+        url_chr_eq(chars[pos+7].chr, '/'))
+        return true;
+    return false;
+}
+
+static int url_find_end(termchar *chars, int cols, int start)
+{
+    int scheme_len = (url_chr_eq(chars[start+4].chr, 's') ? 8 : 7);
+    int end = start + scheme_len;
+    while (end < cols && !url_is_terminator(chars[end].chr))
+        end++;
+    return end;
+}
+
+static int url_trim_end(termchar *chars, int start, int end)
+{
+    while (end > start) {
+        unsigned long c = chars[end-1].chr;
+        if ((c & CSET_MASK) != 0) c &= 0xFF;
+        if (c == '.' || c == ',' || c == ';' || c == ':' ||
+            c == '!' || c == '?' || c == ')' || c == ']' || c == '}') {
+            if (c == ')') {
+                for (int i = start; i < end - 1; i++) {
+                    unsigned long oc = chars[i].chr;
+                    if ((oc & CSET_MASK) != 0) oc &= 0xFF;
+                    if (oc == '(') goto keep_bracket;
+                }
+            }
+            if (c == ']') {
+                for (int i = start; i < end - 1; i++) {
+                    unsigned long oc = chars[i].chr;
+                    if ((oc & CSET_MASK) != 0) oc &= 0xFF;
+                    if (oc == '[') goto keep_bracket;
+                }
+            }
+            end--;
+            continue;
+          keep_bracket:
+            break;
+        }
+        break;
+    }
+    return end;
+}
+
+static char *url_build_string(termchar *chars, int start, int end)
+{
+    int len = 0;
+    for (int i = start; i < end; i++)
+        if (chars[i].chr != UCSWIDE) len++;
+    char *url = snewn(len + 1, char);
+    int pos = 0;
+    for (int i = start; i < end; i++) {
+        if (chars[i].chr == UCSWIDE) continue;
+        url[pos++] = (char)(chars[i].chr & 0xFF);
+    }
+    url[pos] = '\0';
+    return url;
+}
+
+static char *scan_url_at(termchar *chars, int cols, int x)
+{
+    if (x > 0 && chars[x].chr == UCSWIDE)
+        x--;
+    int url_start = -1;
+    for (int pos = x; pos >= 0; pos--) {
+        if (chars[pos].chr == UCSWIDE) continue;
+        if (url_has_scheme_at(chars, cols, pos)) {
+            url_start = pos;
+            break;
+        }
+    }
+    if (url_start < 0) return NULL;
+    int scheme_len = (url_chr_eq(chars[url_start+4].chr, 's') ? 8 : 7);
+    if (url_start + scheme_len > x) return NULL;
+    int url_end = url_find_end(chars, cols, url_start);
+    url_end = url_trim_end(chars, url_start, url_end);
+    if (url_end <= url_start || x >= url_end) return NULL;
+    return url_build_string(chars, url_start, url_end);
+}
+
+static void mark_url_underlines(termchar *chars, int cols, bool *url_mask)
+{
+    int i = 0;
+    while (i < cols) {
+        if (chars[i].chr == UCSWIDE) { i++; continue; }
+        if (!url_has_scheme_at(chars, cols, i)) { i++; continue; }
+        int scheme_len = (url_chr_eq(chars[i+4].chr, 's') ? 8 : 7);
+        int end = i + scheme_len;
+        while (end < cols && !url_is_terminator(chars[end].chr))
+            end++;
+        end = url_trim_end(chars, i, end);
+        for (int j = i; j < end; j++)
+            url_mask[j] = true;
+        i = end;
+    }
+}
+
+char *term_url_at(Terminal *term, int x, int y)
+{
+    termline *ldata;
+    termchar *lchars;
+    char *url;
+    pos scrpos;
+    if (y < 0 || y >= term->rows || x < 0 || x >= term->cols)
+        return NULL;
+    scrpos.y = y + term->disptop;
+    ldata = lineptr(scrpos.y);
+    if ((ldata->lattr & LATTR_MODE) != LATTR_NORM)
+        x /= 2;
+    lchars = term_bidi_line(term, ldata, y);
+    if (!lchars)
+        lchars = ldata->chars;
+    url = scan_url_at(lchars, term->cols, x);
+    unlineptr(ldata);
+    return url;
+}
+
 static void do_paint_draw(Terminal *term, termline *ldata, int x, int y,
                           wchar_t *ch, int ccount,
                           unsigned long attr, truecolour tc)
@@ -6217,6 +6383,15 @@ static void do_paint(Terminal *term)
         }
 
         /*
+         * Compute URL underline mask for this line, using the
+         * displayed (possibly bidi-reordered) character array.
+         * We do this once per line and apply below.
+         */
+        bool *url_underline = snewn(term->cols, bool);
+        memset(url_underline, 0, term->cols * sizeof(bool));
+        mark_url_underlines(lchars, term->cols, url_underline);
+
+        /*
          * First loop: work along the line deciding what we want
          * each character cell to look like.
          */
@@ -6302,6 +6477,10 @@ static void do_paint(Terminal *term)
                 term->dispcursx = j;
                 term->dispcursy = i;
             }
+
+            /* Underline visible URL spans */
+            if (url_underline[j])
+                tattr |= ATTR_UNDER;
 
             /* FULL-TERMCHAR */
             newline[j].attr = tattr;
@@ -6569,6 +6748,7 @@ static void do_paint(Terminal *term)
             do_paint_draw(term, ldata, start, i, ch, ccount, attr, tc);
 
         unlineptr(ldata);
+        sfree(url_underline);
     }
 
     sfree(newline);
