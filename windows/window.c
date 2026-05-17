@@ -2708,12 +2708,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 
             if (press) {
                 if (button == MBT_LEFT && (wParam & MK_CONTROL)) {
-                    char *url = term_url_at(
+                    wchar_t *url = term_url_at(
                         wgs->term,
                         TO_CHR_X(X_POS(lParam)),
                         TO_CHR_Y(Y_POS(lParam)));
                     if (url) {
-                        ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOW);
+                        ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOW);
                         sfree(url);
                         return 0;
                     }

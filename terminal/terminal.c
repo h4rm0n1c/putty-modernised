@@ -104,6 +104,7 @@ static void parse_optionalrgb(optionalrgb *out, unsigned *values);
 static void term_added_data(Terminal *term, bool);
 static void term_update_raw_mouse_mode(Terminal *term);
 static void term_out_cb(void *);
+static int line_cols(Terminal *, termline *);
 
 static termline *newtermline(Terminal *term, int cols, bool bce)
 {
@@ -6077,96 +6078,211 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
 }
 
 /*
- * Helpers for clickable visible URL support.
+ * Clickable visible URL support.
  *
- * Detect literal http:// and https:// URLs visible in terminal output.
- * URL text is the authoritative visible text. Non-ASCII characters
- * terminate URL spans. Scheme-only stubs and prefix-attached URLs
- * (e.g. xhttp://) are rejected.
+ * Detect visible http:// and https:// URLs in terminal output,
+ * supporting soft-wrapped multiline URLs and Unicode/IRI characters.
+ *
+ * Only URLs visibly present in the terminal are clickable.
+ * No OSC8, no hidden targets.
  */
 
-static unsigned long url_visible_chr(Terminal *term, unsigned long chr)
+#define MAX_URL_SEARCH_LINES 100
+#define MAX_VISIBLE_URL_CHARS 16384
+
+typedef struct url_cellref {
+    int y;                          /* absolute terminal y */
+    int x;                          /* displayed column */
+} url_cellref;
+
+typedef struct url_logical_line {
+    wchar_t *text;                  /* visible Unicode text of logical line */
+    size_t len;                     /* characters in text */
+    size_t size;                    /* allocated capacity */
+    url_cellref *cells;             /* cell coordinate for each text position */
+    size_t ncells;                  /* entries in cells */
+    size_t cellsize;                /* allocated capacity */
+    size_t click_index;             /* text index of click point, or (size_t)-1 */
+    int start_absy;                 /* first absolute y of logical line */
+    int end_absy;                   /* last absolute y of logical line */
+} url_logical_line;
+
+static void url_lline_clear(url_logical_line *lline)
+{
+    sfree(lline->text);
+    sfree(lline->cells);
+    memset(lline, 0, sizeof(*lline));
+}
+
+static bool url_lline_append(url_logical_line *lline, wchar_t wc,
+                             int abs_y, int x)
+{
+    sgrowarray(lline->text, lline->size, lline->len);
+    lline->text[lline->len++] = wc;
+    sgrowarray(lline->cells, lline->cellsize, lline->ncells);
+    lline->cells[lline->ncells].y = abs_y;
+    lline->cells[lline->ncells].x = x;
+    lline->ncells++;
+    if (lline->len >= MAX_VISIBLE_URL_CHARS)
+        return false;
+    return true;
+}
+
+static unsigned long url_cell_to_unicode(Terminal *term, unsigned long chr)
 {
     if (chr == UCSWIDE) return UCSWIDE;
     switch (chr & CSET_MASK) {
-      case CSET_ASCII:
-        return term->ucsdata->unitab_line[chr & 0xFF];
       case CSET_LINEDRW:
         return term->ucsdata->unitab_xterm[chr & 0xFF];
+      case CSET_ASCII:
+        return term->ucsdata->unitab_line[chr & 0xFF];
       case CSET_SCOACS:
         return term->ucsdata->unitab_scoacs[chr & 0xFF];
-      default:
-        return chr;
+    }
+    switch (chr & CSET_MASK) {
+      case CSET_ACP:
+        return term->ucsdata->unitab_font[chr & 0xFF];
+      case CSET_OEMCP:
+        return term->ucsdata->unitab_oemcp[chr & 0xFF];
+    }
+    return chr;
+}
+
+static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
+                                     url_logical_line *lline)
+{
+    int abs_y = scr_y + term->disptop;
+    int sb_depth = count234(term->scrollback);
+    int altlines = 0;
+    if (term->erase_to_scrollback && term->alt_which && term->alt_screen)
+        altlines = term->alt_sblines;
+    int min_abs_y = -altlines - sb_depth;
+
+    memset(lline, 0, sizeof(*lline));
+    lline->click_index = (size_t)-1;
+    lline->start_absy = abs_y;
+    lline->end_absy = abs_y;
+
+    /* Walk upward while previous line wraps forward */
+    for (int i = 0; i < MAX_URL_SEARCH_LINES; i++) {
+        int prev = lline->start_absy - 1;
+        if (prev < min_abs_y) break;
+        termline *ld = lineptr(prev);
+        bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
+        unlineptr(ld);
+        if (!wraps) break;
+        lline->start_absy = prev;
+    }
+
+    /* Walk downward while current line wraps to next */
+    for (int i = 0; i < MAX_URL_SEARCH_LINES; i++) {
+        termline *ld = lineptr(lline->end_absy);
+        bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
+        unlineptr(ld);
+        if (!wraps) break;
+        lline->end_absy++;
+        if (lline->end_absy > abs_y + term->rows + MAX_URL_SEARCH_LINES)
+            break;
+    }
+
+    for (int ay = lline->start_absy; ay <= lline->end_absy; ay++) {
+        termline *ldata = lineptr(ay);
+        int sr = scr_y - (abs_y - ay);
+
+        termchar *lchars;
+        if (sr >= 0 && sr < term->rows)
+            lchars = term_bidi_line(term, ldata, sr);
+        else
+            lchars = NULL;
+        if (!lchars)
+            lchars = ldata->chars;
+
+        int lcols = line_cols(term, ldata);
+
+        for (int x = 0; x < lcols; x++) {
+            if (ay == abs_y && x == click_x)
+                lline->click_index = lline->len;
+
+            if (lchars[x].chr == UCSWIDE)
+                continue;
+
+            unsigned long uc = url_cell_to_unicode(term, lchars[x].chr);
+            uc &= ~CSET_MASK;
+
+#ifdef PLATFORM_IS_UTF16
+            if (uc > 0x10000 && uc < 0x110000) {
+                if (!url_lline_append(lline,
+                    0xD800 | ((uc - 0x10000) >> 10), ay, x))
+                    goto lline_done;
+                if (!url_lline_append(lline,
+                    0xDC00 | ((uc - 0x10000) & 0x3FF), ay, x))
+                    goto lline_done;
+            } else
+#endif
+            {
+                if (!url_lline_append(lline, (wchar_t)uc, ay, x))
+                    goto lline_done;
+            }
+
+            /* Combining characters */
+            int cc_idx = x;
+            int cc_step = lchars[cc_idx].cc_next;
+            while (cc_step) {
+                cc_idx += cc_step;
+                unsigned long uc_cc =
+                    lchars[cc_idx].chr & ~CSET_MASK;
+                if (!url_lline_append(lline, (wchar_t)uc_cc, ay, x))
+                    goto lline_done;
+                cc_step = lchars[cc_idx].cc_next;
+            }
+        }
+
+        unlineptr(ldata);
+    }
+
+lline_done:
+    if (lline->len > 0)
+        lline->text[lline->len] = L'\0';
+    else {
+        sfree(lline->text);
+        lline->text = NULL;
     }
 }
 
-static bool url_visible_ascii_at(Terminal *term, termchar *chars,
-                                 int pos, unsigned char *out)
+static bool url_is_boundary_char(wchar_t wc)
 {
-    unsigned long vis = url_visible_chr(term, chars[pos].chr);
-    if (vis == UCSWIDE) return false;
-    if (vis < 0x21 || vis > 0x7E) return false;
-    unsigned char c = (unsigned char)vis;
-    if (c == '"' || c == '\'' || c == '`' || c == '<' || c == '>')
+    if (wc <= 0x20 || wc == 0x7F) return true;
+    if (wc == L'(' || wc == L'[' || wc == L'{' || wc == L'<' ||
+        wc == L'"' || wc == L'\'' || wc == L'`')
+        return true;
+    if (wc >= 0x21 && wc <= 0x7E)
         return false;
-    *out = c;
     return true;
 }
 
-static bool url_has_scheme_at(Terminal *term, termchar *chars, int cols, int pos)
+static bool url_is_body_char(wchar_t wc)
 {
-    unsigned char c;
-    if (pos + 7 <= cols &&
-        url_visible_ascii_at(term, chars, pos, &c) && (c == 'h' || c == 'H') &&
-        url_visible_ascii_at(term, chars, pos+1, &c) && (c == 't' || c == 'T') &&
-        url_visible_ascii_at(term, chars, pos+2, &c) && (c == 't' || c == 'T') &&
-        url_visible_ascii_at(term, chars, pos+3, &c) && (c == 'p' || c == 'P') &&
-        url_visible_ascii_at(term, chars, pos+4, &c) && c == ':' &&
-        url_visible_ascii_at(term, chars, pos+5, &c) && c == '/' &&
-        url_visible_ascii_at(term, chars, pos+6, &c) && c == '/')
-        return true;
-    if (pos + 8 <= cols &&
-        url_visible_ascii_at(term, chars, pos, &c) && (c == 'h' || c == 'H') &&
-        url_visible_ascii_at(term, chars, pos+1, &c) && (c == 't' || c == 'T') &&
-        url_visible_ascii_at(term, chars, pos+2, &c) && (c == 't' || c == 'T') &&
-        url_visible_ascii_at(term, chars, pos+3, &c) && (c == 'p' || c == 'P') &&
-        url_visible_ascii_at(term, chars, pos+4, &c) && (c == 's' || c == 'S') &&
-        url_visible_ascii_at(term, chars, pos+5, &c) && c == ':' &&
-        url_visible_ascii_at(term, chars, pos+6, &c) && c == '/' &&
-        url_visible_ascii_at(term, chars, pos+7, &c) && c == '/')
-        return true;
-    return false;
+    if (wc <= 0x20 || wc == 0x7F) return false;
+    if (wc == L'"' || wc == L'\'' || wc == L'`' ||
+        wc == L'<' || wc == L'>')
+        return false;
+    return true;
 }
 
-static int url_find_end(Terminal *term, termchar *chars, int cols,
-                        int start, int scheme_len)
-{
-    int end = start + scheme_len;
-    unsigned char c;
-    while (end < cols && url_visible_ascii_at(term, chars, end, &c))
-        end++;
-    return end;
-}
-
-static int url_trim_end(Terminal *term, termchar *chars, int start, int end)
+static size_t url_trim_end_w(wchar_t *text, size_t start, size_t end)
 {
     while (end > start) {
-        unsigned char c;
-        if (!url_visible_ascii_at(term, chars, end - 1, &c))
-            break;
-        if (c == '.' || c == ',' || c == ';' || c == ':' ||
-            c == '!' || c == '?' || c == '}') {
+        wchar_t wc = text[end - 1];
+        if (wc == L'.' || wc == L',' || wc == L';' || wc == L':' ||
+            wc == L'!' || wc == L'?' || wc == L'}') {
             end--;
             continue;
         }
-        if (c == ')') {
+        if (wc == L')') {
             int open = 0, close = 0;
-            for (int i = start; i < end - 1; i++) {
-                unsigned char oc;
-                if (url_visible_ascii_at(term, chars, i, &oc)) {
-                    if (oc == '(') open++;
-                    if (oc == ')') close++;
-                }
+            for (size_t i = start; i < end - 1; i++) {
+                if (text[i] == L'(') open++;
+                if (text[i] == L')') close++;
             }
             if (close >= open) {
                 end--;
@@ -6174,14 +6290,11 @@ static int url_trim_end(Terminal *term, termchar *chars, int start, int end)
             }
             break;
         }
-        if (c == ']') {
+        if (wc == L']') {
             int open = 0, close = 0;
-            for (int i = start; i < end - 1; i++) {
-                unsigned char oc;
-                if (url_visible_ascii_at(term, chars, i, &oc)) {
-                    if (oc == '[') open++;
-                    if (oc == ']') close++;
-                }
+            for (size_t i = start; i < end - 1; i++) {
+                if (text[i] == L'[') open++;
+                if (text[i] == L']') close++;
             }
             if (close >= open) {
                 end--;
@@ -6194,115 +6307,120 @@ static int url_trim_end(Terminal *term, termchar *chars, int start, int end)
     return end;
 }
 
-static char *url_build_string(Terminal *term, termchar *chars, int start, int end)
+static bool url_find_next(wchar_t *text, size_t len,
+                          size_t from, size_t *url_start_out,
+                          size_t *url_end_out)
 {
-    int len = 0;
-    for (int i = start; i < end; i++) {
-        unsigned char c;
-        if (url_visible_ascii_at(term, chars, i, &c))
-            len++;
-    }
-    char *url = snewn(len + 1, char);
-    int pos = 0;
-    for (int i = start; i < end; i++) {
-        unsigned char c;
-        if (url_visible_ascii_at(term, chars, i, &c))
-            url[pos++] = c;
-    }
-    url[pos] = '\0';
-    return url;
-}
-
-static bool url_valid_start_boundary(Terminal *term, termchar *chars,
-                                     int pos)
-{
-    if (pos <= 0) return true;
-    int prev = pos - 1;
-    while (prev >= 0 && chars[prev].chr == UCSWIDE)
-        prev--;
-    if (prev < 0) return true;
-    unsigned long vis = url_visible_chr(term, chars[prev].chr);
-    if (vis == UCSWIDE) return true;
-    if (vis <= 0x20 || vis == 0x7F) return true;
-    if (vis == '(' || vis == '[' || vis == '{' || vis == '<' ||
-        vis == '"' || vis == '\'' || vis == '`')
-        return true;
-    if (vis >= 0x21 && vis <= 0x7E)
-        return false;
-    return true;
-}
-
-static char *scan_url_at(Terminal *term, termchar *chars, int cols, int x)
-{
-    if (x < 0 || x >= cols) return NULL;
-    if (x > 0 && chars[x].chr == UCSWIDE)
-        x--;
-    int url_start = -1;
-    for (int pos = x; pos >= 0; pos--) {
-        if (chars[pos].chr == UCSWIDE) continue;
-        if (!url_has_scheme_at(term, chars, cols, pos)) continue;
-        if (!url_valid_start_boundary(term, chars, pos)) continue;
-        url_start = pos;
-        break;
-    }
-    if (url_start < 0) return NULL;
-    int scheme_len;
-    unsigned char c;
-    if (url_visible_ascii_at(term, chars, url_start+4, &c) && c == ':')
-        scheme_len = 7;
-    else
-        scheme_len = 8;
-    if (url_start + scheme_len > x) return NULL;
-    int url_end = url_find_end(term, chars, cols, url_start, scheme_len);
-    url_end = url_trim_end(term, chars, url_start, url_end);
-    if (url_end <= url_start + scheme_len || x >= url_end) return NULL;
-    return url_build_string(term, chars, url_start, url_end);
-}
-
-static void mark_url_underlines(Terminal *term, termchar *chars, int cols,
-                                bool *url_mask)
-{
-    int i = 0;
-    while (i < cols) {
-        if (chars[i].chr == UCSWIDE) { i++; continue; }
-        if (!url_has_scheme_at(term, chars, cols, i)) { i++; continue; }
-        if (!url_valid_start_boundary(term, chars, i)) { i++; continue; }
-        int scheme_len;
-        unsigned char c;
-        if (url_visible_ascii_at(term, chars, i+4, &c) && c == ':')
-            scheme_len = 7;
-        else
-            scheme_len = 8;
-        int end = url_find_end(term, chars, cols, i, scheme_len);
-        end = url_trim_end(term, chars, i, end);
-        if (end <= i + scheme_len) {
-            i++;
+    for (size_t i = from; i + 7 <= len; i++) {
+        if (text[i] != L'h' && text[i] != L'H')
             continue;
+
+        int slen = 0;
+        if (i + 8 <= len &&
+            (text[i+1] == L't' || text[i+1] == L'T') &&
+            (text[i+2] == L't' || text[i+2] == L'T') &&
+            (text[i+3] == L'p' || text[i+3] == L'P') &&
+            (text[i+4] == L's' || text[i+4] == L'S') &&
+            text[i+5] == L':' && text[i+6] == L'/' && text[i+7] == L'/')
+            slen = 8;
+        else if ((text[i+1] == L't' || text[i+1] == L'T') &&
+            (text[i+2] == L't' || text[i+2] == L'T') &&
+            (text[i+3] == L'p' || text[i+3] == L'P') &&
+            text[i+4] == L':' && text[i+5] == L'/' && text[i+6] == L'/')
+            slen = 7;
+
+        if (slen == 0) continue;
+
+        if (i > 0 && !url_is_boundary_char(text[i - 1]))
+            continue;
+
+        size_t e = i + slen;
+        while (e < len && url_is_body_char(text[e]))
+            e++;
+        e = url_trim_end_w(text, i, e);
+
+        if (e > i + slen) {
+            *url_start_out = i;
+            *url_end_out = e;
+            return true;
         }
-        for (int j = i; j < end; j++)
-            url_mask[j] = true;
-        i = end;
     }
+    return false;
 }
 
-char *term_url_at(Terminal *term, int x, int y)
+wchar_t *term_url_at(Terminal *term, int x, int y)
 {
-    termline *ldata;
-    termchar *lchars;
-    char *url;
-    pos scrpos;
     if (y < 0 || y >= term->rows || x < 0 || x >= term->cols)
         return NULL;
-    scrpos.y = y + term->disptop;
-    ldata = lineptr(scrpos.y);
-    if ((ldata->lattr & LATTR_MODE) != LATTR_NORM)
-        x /= 2;
-    lchars = term_bidi_line(term, ldata, y);
-    if (!lchars)
-        lchars = ldata->chars;
-    url = scan_url_at(term, lchars, term->cols, x);
-    unlineptr(ldata);
+
+    int adj_x = x;
+    int abs_y = y + term->disptop;
+    {
+        termline *ldata = lineptr(abs_y);
+        termchar *lchars = term_bidi_line(term, ldata, y);
+        if (!lchars) lchars = ldata->chars;
+        if (adj_x > 0 && adj_x < line_cols(term, ldata) &&
+            lchars[adj_x].chr == UCSWIDE)
+            adj_x--;
+        unlineptr(ldata);
+    }
+
+    url_logical_line lline;
+    url_extract_logical_line(term, y, adj_x, &lline);
+
+    wchar_t *url = NULL;
+    if (lline.text && lline.len > 0 &&
+        lline.click_index != (size_t)-1) {
+        size_t us, ue;
+        size_t from = 0;
+        while (from < lline.len) {
+            if (!url_find_next(lline.text, lline.len, from, &us, &ue))
+                break;
+            if (lline.click_index >= us &&
+                lline.click_index < ue) {
+                size_t urllen = ue - us;
+                url = snewn(urllen + 1, wchar_t);
+                memcpy(url, lline.text + us,
+                       urllen * sizeof(wchar_t));
+                url[urllen] = L'\0';
+                break;
+            }
+            from = ue;
+        }
+    }
+
+    url_lline_clear(&lline);
     return url;
+}
+
+static void mark_url_underlines(Terminal *term, int scr_y, bool *url_mask)
+{
+    url_logical_line lline;
+    url_extract_logical_line(term, scr_y, -1, &lline);
+
+    if (!lline.text || lline.len == 0)
+        goto out;
+
+    int abs_row = scr_y + term->disptop;
+    size_t from = 0;
+
+    while (from < lline.len) {
+        size_t us, ue;
+        if (!url_find_next(lline.text, lline.len, from, &us, &ue))
+            break;
+
+        for (size_t ti = us; ti < ue && ti < lline.ncells; ti++) {
+            if (lline.cells[ti].y == abs_row &&
+                lline.cells[ti].x >= 0 &&
+                lline.cells[ti].x < term->cols)
+                url_mask[lline.cells[ti].x] = true;
+        }
+
+        from = ue;
+    }
+
+out:
+    url_lline_clear(&lline);
 }
 
 static void do_paint_draw(Terminal *term, termline *ldata, int x, int y,
@@ -6452,7 +6570,7 @@ static void do_paint(Terminal *term)
          */
         bool *url_underline = snewn(term->cols, bool);
         memset(url_underline, 0, term->cols * sizeof(bool));
-        mark_url_underlines(term, lchars, term->cols, url_underline);
+        mark_url_underlines(term, i, url_underline);
 
         /*
          * First loop: work along the line deciding what we want

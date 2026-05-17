@@ -56,6 +56,10 @@ Clickable URL support:
 This fork detects visible http:// and https:// URLs in terminal output.
 Detected URLs are underlined and can be opened with Ctrl+LeftClick.
 
+Long soft-wrapped URLs are reconstructed across PuTTY soft wraps.
+UTF-8 / Unicode URL text is preserved and opened through the Windows
+wide-character API.
+
 Only URLs visibly present in the terminal are opened.
 OSC8 hidden-target hyperlinks are not supported.
 file:// and custom URI schemes are not opened.
