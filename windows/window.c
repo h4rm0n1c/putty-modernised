@@ -2707,20 +2707,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
             }
 
             if (press) {
-                /* Ctrl+LeftClick on an OSC 8 hyperlink opens the URL */
-                if (button == MBT_LEFT && (wParam & MK_CONTROL)) {
-                    const char *url = term_hyperlink_at(
-                        wgs->term,
-                        TO_CHR_X(X_POS(lParam)),
-                        TO_CHR_Y(Y_POS(lParam)));
-                    if (url &&
-                        (strstartswith(url, "http://") ||
-                         strstartswith(url, "https://"))) {
-                        ShellExecuteA(NULL, "open", url, NULL, NULL,
-                                      SW_SHOW);
-                        return 0;
-                    }
-                }
                 click(wgs, button,
                       TO_CHR_X(X_POS(lParam)), TO_CHR_Y(Y_POS(lParam)),
                       wParam & MK_SHIFT, wParam & MK_CONTROL,

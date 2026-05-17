@@ -52,22 +52,6 @@ original to this fork and reuses PuTTY's existing parser and clipboard
 abstractions, but the design deliberately follows established
 terminal-emulator behaviour for OSC52 clipboard handling.
 
-OSC 8 hyperlink support:
-This fork supports OSC8 terminal hyperlinks. Remote applications can
-attach clickable hyperlinks to terminal text using OSC 8 escape
-sequences. Ctrl+LeftClick on hyperlinked text opens the URL in your
-default browser.
-
-Only http:// and https:// URLs are opened; file:// and custom URI
-schemes are intentionally not opened for security.
-
-Hyperlinks persist in scrollback. A GUI toggle is planned for a
-future pass but is not part of this implementation.
-
-Attribution: OSC8 support in this fork was implemented by studying
-the behaviour of WezTerm, Alacritty, and kitty. The implementation
-reuses PuTTY's existing terminal parser and cell infrastructure.
-
 
 PuTTY source code README
 ========================

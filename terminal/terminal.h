@@ -32,7 +32,6 @@ struct termchar {
     unsigned long chr;
     unsigned long attr;
     truecolour truecolour;
-    unsigned short hyperlink_id;
 
     /*
      * The cc_next field is used to link multiple termchars
@@ -352,19 +351,6 @@ struct terminal_tag {
     int mouse_select_clipboards[N_CLIPBOARDS];
     int n_mouse_select_clipboards;
     int mouse_paste_clipboard;
-
-    /* OSC 8 hyperlink support */
-    int current_hyperlink_id;
-    char *current_hyperlink_id_str;
-    char *current_hyperlink_url;
-
-    struct hyperlink_storage {
-        unsigned short id;
-        char *id_str;
-        char *url;
-    } *hyperlinks;
-    int n_hyperlinks;
-    int hyperlinks_size;
 
     char *window_title, *icon_title;
     int wintitle_codepage, icontitle_codepage;
