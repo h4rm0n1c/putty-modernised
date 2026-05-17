@@ -697,6 +697,9 @@ typedef struct compressed_scrollback_line {
 } compressed_scrollback_line;
 
 static termline *decompressline_no_free(compressed_scrollback_line *line);
+static void makeliteral_hyperlink(strbuf *b, termchar *c, unsigned long *state);
+static void readliteral_hyperlink(BinarySource *bs, termchar *c,
+                                  termline *ldata, unsigned long *state);
 
 static compressed_scrollback_line *compressline_no_free(termline *ldata)
 {
@@ -749,6 +752,7 @@ static compressed_scrollback_line *compressline_no_free(termline *ldata)
     makerle(b, ldata, makeliteral_attr);
     makerle(b, ldata, makeliteral_truecolour);
     makerle(b, ldata, makeliteral_cc);
+    makerle(b, ldata, makeliteral_hyperlink);
 
     size_t linelen = b->len - sizeof(compressed_scrollback_line);
     compressed_scrollback_line *line =
@@ -933,6 +937,15 @@ static void readliteral_cc(BinarySource *bs, termchar *c, termline *ldata,
         add_cc(ldata, x, n.chr);
     }
 }
+static void makeliteral_hyperlink(strbuf *b, termchar *c, unsigned long *state)
+{
+    put_uint16(b, c->hyperlink_id);
+}
+static void readliteral_hyperlink(BinarySource *bs, termchar *c,
+                                  termline *ldata, unsigned long *state)
+{
+    c->hyperlink_id = get_uint16(bs);
+}
 
 static termline *decompressline_no_free(compressed_scrollback_line *line)
 {
@@ -969,8 +982,10 @@ static termline *decompressline_no_free(compressed_scrollback_line *line)
      */
     {
         int i;
-        for (i = 0; i < ldata->cols; i++)
+        for (i = 0; i < ldata->cols; i++) {
             ldata->chars[i].cc_next = 0;
+            ldata->chars[i].hyperlink_id = 0;
+        }
     }
 
     /*
@@ -992,11 +1007,11 @@ static termline *decompressline_no_free(compressed_scrollback_line *line)
     readrle(bs, ldata, readliteral_attr);
     readrle(bs, ldata, readliteral_truecolour);
     readrle(bs, ldata, readliteral_cc);
+    /* Backward-compatible hyperlink_id RLE stream (added later) */
+    if (get_avail(bs))
+        readrle(bs, ldata, readliteral_hyperlink);
 
-    /* And we always expect that we ended up exactly at the end of the
-     * compressed data. */
     assert(!get_err(bs));
-    assert(get_avail(bs) == 0);
 
     return ldata;
 }
@@ -2079,6 +2094,7 @@ Terminal *term_init(Conf *myconf, struct unicode_data *ucsdata, TermWin *win)
     term->basic_erase_char.attr = ATTR_DEFAULT;
     term->basic_erase_char.truecolour.fg = optionalrgb_none;
     term->basic_erase_char.truecolour.bg = optionalrgb_none;
+    term->basic_erase_char.hyperlink_id = 0;
     term->erase_char = term->basic_erase_char;
 
     /* TermWin implementations will typically extend these with
@@ -2086,6 +2102,11 @@ Terminal *term_init(Conf *myconf, struct unicode_data *ucsdata, TermWin *win)
     term->mouse_select_clipboards[0] = CLIP_LOCAL;
     term->n_mouse_select_clipboards = 1;
     term->mouse_paste_clipboard = CLIP_NULL;
+
+    term->current_hyperlink_id = 0;
+    term->hyperlinks = NULL;
+    term->n_hyperlinks = 0;
+    term->hyperlinks_size = 0;
 
     term->trusted = true;
 
@@ -2137,6 +2158,12 @@ void term_free(Terminal *term)
     sfree(term->wcFrom);
     sfree(term->wcTo);
     strbuf_free(term->answerback);
+
+    for (i = 0; i < term->n_hyperlinks; i++) {
+        sfree(term->hyperlinks[i].id_str);
+        sfree(term->hyperlinks[i].url);
+    }
+    sfree(term->hyperlinks);
 
     for (i = 0; i < term->bidi_cache_size; i++) {
         sfree(term->pre_bidi_cache[i].chars);
@@ -3261,6 +3288,100 @@ static void do_osc52_clipboard(Terminal *term)
     strbuf_free(decoded);
 }
 
+static void do_osc8_hyperlink(Terminal *term)
+{
+    const char *p = term->osc_string;
+    size_t len = term->osc_strlen;
+    const char *semicolon;
+    const char *uri;
+    size_t uri_len;
+
+    semicolon = memchr(p, ';', len);
+    if (!semicolon) {
+        term->current_hyperlink_id = 0;
+        return;
+    }
+
+    uri = semicolon + 1;
+    uri_len = len - (semicolon - p) - 1;
+
+    if (uri_len == 0) {
+        term->current_hyperlink_id = 0;
+        return;
+    }
+
+    if (uri_len > 4096)
+        return;
+
+    const char *params = p;
+    size_t params_len = semicolon - p;
+
+    char *id_str = NULL;
+
+    const char *pp = params;
+    size_t remaining = params_len;
+    while (remaining > 0) {
+        const char *colon = memchr(pp, ':', remaining);
+        size_t pair_len = colon ? (size_t)(colon - pp) : remaining;
+        const char *eq = memchr(pp, '=', pair_len);
+        if (eq && (size_t)(eq - pp) < pair_len &&
+            pair_len - (eq - pp) > 1) {
+            size_t key_len = eq - pp;
+            size_t val_len = pair_len - key_len - 1;
+            if (key_len == 2 && memcmp(pp, "id", 2) == 0) {
+                if (val_len <= 256) {
+                    sfree(id_str);
+                    id_str = dupprintf("%.*s", (int)val_len, eq + 1);
+                }
+            }
+        }
+        if (colon) {
+            remaining -= pair_len + 1;
+            pp = colon + 1;
+        } else {
+            break;
+        }
+    }
+
+    if (!id_str)
+        id_str = dupstr("");
+
+    char url_buf[4097];
+    if (uri_len >= sizeof(url_buf))
+        uri_len = sizeof(url_buf) - 1;
+    memcpy(url_buf, uri, uri_len);
+    url_buf[uri_len] = '\0';
+
+    int id = 0;
+    for (int i = 0; i < term->n_hyperlinks; i++) {
+        if (!strcmp(url_buf, term->hyperlinks[i].url) &&
+            !strcmp(id_str, term->hyperlinks[i].id_str)) {
+            id = term->hyperlinks[i].id;
+            break;
+        }
+    }
+
+    if (!id && term->n_hyperlinks < 65535) {
+        if (term->n_hyperlinks >= term->hyperlinks_size) {
+            int new_size = term->hyperlinks_size ?
+                           term->hyperlinks_size * 2 : 16;
+            term->hyperlinks = sresize(term->hyperlinks, new_size,
+                                       struct hyperlink_storage);
+            term->hyperlinks_size = new_size;
+        }
+        id = term->n_hyperlinks + 1;
+        term->hyperlinks[term->n_hyperlinks].id = id;
+        term->hyperlinks[term->n_hyperlinks].id_str = id_str;
+        term->hyperlinks[term->n_hyperlinks].url = dupstr(url_buf);
+        term->n_hyperlinks++;
+        id_str = NULL;
+    }
+
+    term->current_hyperlink_id = id;
+
+    sfree(id_str);
+}
+
 /*
  * Process an OSC sequence: set window title or icon name.
  */
@@ -3317,6 +3438,9 @@ static void do_osc(Terminal *term)
                     sfree(reply_buf);
                 }
             }
+            break;
+          case 8:
+            do_osc8_hyperlink(term);
             break;
           case 52:
             do_osc52_clipboard(term);
@@ -3464,6 +3588,8 @@ static void term_display_graphic_char(Terminal *term, unsigned long c)
         cline->chars[term->curs.x].attr = term->curr_attr;
         cline->chars[term->curs.x].truecolour =
             term->curr_truecolour;
+        cline->chars[term->curs.x].hyperlink_id =
+            term->current_hyperlink_id;
 
         term->curs.x++;
 
@@ -3473,6 +3599,8 @@ static void term_display_graphic_char(Terminal *term, unsigned long c)
         cline->chars[term->curs.x].attr = term->curr_attr;
         cline->chars[term->curs.x].truecolour =
             term->curr_truecolour;
+        cline->chars[term->curs.x].hyperlink_id =
+            term->current_hyperlink_id;
 
         break;
       case 1:
@@ -3485,6 +3613,8 @@ static void term_display_graphic_char(Terminal *term, unsigned long c)
         cline->chars[term->curs.x].attr = term->curr_attr;
         cline->chars[term->curs.x].truecolour =
             term->curr_truecolour;
+        cline->chars[term->curs.x].hyperlink_id =
+            term->current_hyperlink_id;
 
         break;
       case 0:
@@ -6307,6 +6437,7 @@ static void do_paint(Terminal *term)
             newline[j].attr = tattr;
             newline[j].chr = tchar;
             newline[j].truecolour = tc;
+            newline[j].hyperlink_id = d->hyperlink_id;
             /* Combining characters are still read from lchars */
             newline[j].cc_next = 0;
         }
@@ -8208,4 +8339,30 @@ void term_notify_window_size_pixels(Terminal *term, int x, int y)
 {
     term->winpixsize_x = x;
     term->winpixsize_y = y;
+}
+
+const char *term_hyperlink_at(Terminal *term, int x, int y)
+{
+    if (x < 0 || x >= term->cols || y < 0 || y >= term->rows)
+        return NULL;
+
+    int line_index = y + term->disptop;
+    termline *ldata = lineptr(line_index);
+    if (!ldata) {
+        unlineptr(ldata);
+        return NULL;
+    }
+
+    unsigned short id = ldata->chars[x].hyperlink_id;
+    unlineptr(ldata);
+
+    if (id == 0)
+        return NULL;
+
+    for (int i = 0; i < term->n_hyperlinks; i++) {
+        if (term->hyperlinks[i].id == id)
+            return term->hyperlinks[i].url;
+    }
+
+    return NULL;
 }
