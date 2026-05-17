@@ -8352,8 +8352,10 @@ const char *term_hyperlink_at(Terminal *term, int x, int y)
 
     int line_index = y + term->disptop;
     termline *ldata = lineptr(line_index);
-    if (!ldata)
+    if (!ldata) {
+        unlineptr(ldata);
         return NULL;
+    }
 
     if ((ldata->lattr & LATTR_MODE) != LATTR_NORM)
         x /= 2;
