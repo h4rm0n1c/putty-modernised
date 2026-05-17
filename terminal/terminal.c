@@ -343,6 +343,8 @@ static bool termchars_equal_override(termchar *a, termchar *b,
         return false;
     if ((a->attr &~ DATTR_MASK) != (battr &~ DATTR_MASK))
         return false;
+    if (a->hyperlink_id != b->hyperlink_id)
+        return false;
     while (a->cc_next || b->cc_next) {
         if (!a->cc_next || !b->cc_next)
             return false;              /* one cc-list ends, other does not */
@@ -3310,8 +3312,10 @@ static void do_osc8_hyperlink(Terminal *term)
         return;
     }
 
-    if (uri_len > 4096)
+    if (uri_len > 4096) {
+        term->current_hyperlink_id = 0;
         return;
+    }
 
     const char *params = p;
     size_t params_len = semicolon - p;
@@ -8352,6 +8356,12 @@ const char *term_hyperlink_at(Terminal *term, int x, int y)
         unlineptr(ldata);
         return NULL;
     }
+
+    if ((ldata->lattr & LATTR_MODE) != LATTR_NORM)
+        x /= 2;
+
+    if (term_bidi_line(term, ldata, y) != NULL)
+        x = term->post_bidi_cache[y].backward[x];
 
     unsigned short id = ldata->chars[x].hyperlink_id;
     unlineptr(ldata);
