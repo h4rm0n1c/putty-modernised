@@ -6080,88 +6080,113 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
  * Helpers for clickable visible URL support.
  *
  * Detect literal http:// and https:// URLs visible in terminal output.
+ * URL text is the authoritative visible text. Non-ASCII characters
+ * terminate URL spans. Scheme-only stubs and prefix-attached URLs
+ * (e.g. xhttp://) are rejected.
  */
 
-static bool url_chr_eq(unsigned long chr, unsigned char ascii)
+static unsigned long url_visible_chr(Terminal *term, unsigned long chr)
 {
-    unsigned char c = chr & 0xFF;
-    if (c == ascii) return true;
-    if (ascii >= 'a' && ascii <= 'z' && c >= 'A' && c <= 'Z' &&
-        c == ascii - 32) return true;
-    if (ascii >= 'A' && ascii <= 'Z' && c >= 'a' && c <= 'z' &&
-        c == ascii + 32) return true;
-    return false;
+    if (chr == UCSWIDE) return UCSWIDE;
+    switch (chr & CSET_MASK) {
+      case CSET_ASCII:
+        return term->ucsdata->unitab_line[chr & 0xFF];
+      case CSET_LINEDRW:
+        return term->ucsdata->unitab_xterm[chr & 0xFF];
+      case CSET_SCOACS:
+        return term->ucsdata->unitab_scoacs[chr & 0xFF];
+      default:
+        return chr;
+    }
 }
 
-static bool url_is_terminator(unsigned long chr)
+static bool url_visible_ascii_at(Terminal *term, termchar *chars,
+                                 int pos, unsigned char *out)
 {
-    if (chr == UCSWIDE) return false;
-    unsigned long c = chr;
-    if ((c & CSET_MASK) != 0) c &= 0xFF;
-    if (c > 0x7F) return false;
-    return c == ' ' || c == '\t' ||
-           c == '"' || c == '\'' || c == '`' ||
-           c == '<' || c == '>' ||
-           c <= 0x1F || c == 0x7F;
+    unsigned long vis = url_visible_chr(term, chars[pos].chr);
+    if (vis == UCSWIDE) return false;
+    if (vis < 0x21 || vis > 0x7E) return false;
+    unsigned char c = (unsigned char)vis;
+    if (c == '"' || c == '\'' || c == '`' || c == '<' || c == '>')
+        return false;
+    *out = c;
+    return true;
 }
 
-static bool url_has_scheme_at(termchar *chars, int cols, int pos)
+static bool url_has_scheme_at(Terminal *term, termchar *chars, int cols, int pos)
 {
+    unsigned char c;
     if (pos + 7 <= cols &&
-        url_chr_eq(chars[pos].chr,   'h') &&
-        url_chr_eq(chars[pos+1].chr, 't') &&
-        url_chr_eq(chars[pos+2].chr, 't') &&
-        url_chr_eq(chars[pos+3].chr, 'p') &&
-        url_chr_eq(chars[pos+4].chr, ':') &&
-        url_chr_eq(chars[pos+5].chr, '/') &&
-        url_chr_eq(chars[pos+6].chr, '/'))
+        url_visible_ascii_at(term, chars, pos, &c) && (c == 'h' || c == 'H') &&
+        url_visible_ascii_at(term, chars, pos+1, &c) && (c == 't' || c == 'T') &&
+        url_visible_ascii_at(term, chars, pos+2, &c) && (c == 't' || c == 'T') &&
+        url_visible_ascii_at(term, chars, pos+3, &c) && (c == 'p' || c == 'P') &&
+        url_visible_ascii_at(term, chars, pos+4, &c) && c == ':' &&
+        url_visible_ascii_at(term, chars, pos+5, &c) && c == '/' &&
+        url_visible_ascii_at(term, chars, pos+6, &c) && c == '/')
         return true;
     if (pos + 8 <= cols &&
-        url_chr_eq(chars[pos].chr,   'h') &&
-        url_chr_eq(chars[pos+1].chr, 't') &&
-        url_chr_eq(chars[pos+2].chr, 't') &&
-        url_chr_eq(chars[pos+3].chr, 'p') &&
-        url_chr_eq(chars[pos+4].chr, 's') &&
-        url_chr_eq(chars[pos+5].chr, ':') &&
-        url_chr_eq(chars[pos+6].chr, '/') &&
-        url_chr_eq(chars[pos+7].chr, '/'))
+        url_visible_ascii_at(term, chars, pos, &c) && (c == 'h' || c == 'H') &&
+        url_visible_ascii_at(term, chars, pos+1, &c) && (c == 't' || c == 'T') &&
+        url_visible_ascii_at(term, chars, pos+2, &c) && (c == 't' || c == 'T') &&
+        url_visible_ascii_at(term, chars, pos+3, &c) && (c == 'p' || c == 'P') &&
+        url_visible_ascii_at(term, chars, pos+4, &c) && (c == 's' || c == 'S') &&
+        url_visible_ascii_at(term, chars, pos+5, &c) && c == ':' &&
+        url_visible_ascii_at(term, chars, pos+6, &c) && c == '/' &&
+        url_visible_ascii_at(term, chars, pos+7, &c) && c == '/')
         return true;
     return false;
 }
 
-static int url_find_end(termchar *chars, int cols, int start)
+static int url_find_end(Terminal *term, termchar *chars, int cols,
+                        int start, int scheme_len)
 {
-    int scheme_len = (url_chr_eq(chars[start+4].chr, 's') ? 8 : 7);
     int end = start + scheme_len;
-    while (end < cols && !url_is_terminator(chars[end].chr))
+    unsigned char c;
+    while (end < cols && url_visible_ascii_at(term, chars, end, &c))
         end++;
     return end;
 }
 
-static int url_trim_end(termchar *chars, int start, int end)
+static int url_trim_end(Terminal *term, termchar *chars, int start, int end)
 {
     while (end > start) {
-        unsigned long c = chars[end-1].chr;
-        if ((c & CSET_MASK) != 0) c &= 0xFF;
+        unsigned char c;
+        if (!url_visible_ascii_at(term, chars, end - 1, &c))
+            break;
         if (c == '.' || c == ',' || c == ';' || c == ':' ||
-            c == '!' || c == '?' || c == ')' || c == ']' || c == '}') {
-            if (c == ')') {
-                for (int i = start; i < end - 1; i++) {
-                    unsigned long oc = chars[i].chr;
-                    if ((oc & CSET_MASK) != 0) oc &= 0xFF;
-                    if (oc == '(') goto keep_bracket;
-                }
-            }
-            if (c == ']') {
-                for (int i = start; i < end - 1; i++) {
-                    unsigned long oc = chars[i].chr;
-                    if ((oc & CSET_MASK) != 0) oc &= 0xFF;
-                    if (oc == '[') goto keep_bracket;
-                }
-            }
+            c == '!' || c == '?' || c == '}') {
             end--;
             continue;
-          keep_bracket:
+        }
+        if (c == ')') {
+            int open = 0, close = 0;
+            for (int i = start; i < end - 1; i++) {
+                unsigned char oc;
+                if (url_visible_ascii_at(term, chars, i, &oc)) {
+                    if (oc == '(') open++;
+                    if (oc == ')') close++;
+                }
+            }
+            if (close >= open) {
+                end--;
+                continue;
+            }
+            break;
+        }
+        if (c == ']') {
+            int open = 0, close = 0;
+            for (int i = start; i < end - 1; i++) {
+                unsigned char oc;
+                if (url_visible_ascii_at(term, chars, i, &oc)) {
+                    if (oc == '[') open++;
+                    if (oc == ']') close++;
+                }
+            }
+            if (close >= open) {
+                end--;
+                continue;
+            }
             break;
         }
         break;
@@ -6169,53 +6194,91 @@ static int url_trim_end(termchar *chars, int start, int end)
     return end;
 }
 
-static char *url_build_string(termchar *chars, int start, int end)
+static char *url_build_string(Terminal *term, termchar *chars, int start, int end)
 {
     int len = 0;
-    for (int i = start; i < end; i++)
-        if (chars[i].chr != UCSWIDE) len++;
+    for (int i = start; i < end; i++) {
+        unsigned char c;
+        if (url_visible_ascii_at(term, chars, i, &c))
+            len++;
+    }
     char *url = snewn(len + 1, char);
     int pos = 0;
     for (int i = start; i < end; i++) {
-        if (chars[i].chr == UCSWIDE) continue;
-        url[pos++] = (char)(chars[i].chr & 0xFF);
+        unsigned char c;
+        if (url_visible_ascii_at(term, chars, i, &c))
+            url[pos++] = c;
     }
     url[pos] = '\0';
     return url;
 }
 
-static char *scan_url_at(termchar *chars, int cols, int x)
+static bool url_valid_start_boundary(Terminal *term, termchar *chars,
+                                     int cols, int pos)
 {
+    if (pos <= 0) return true;
+    int prev = pos - 1;
+    while (prev >= 0 && chars[prev].chr == UCSWIDE)
+        prev--;
+    if (prev < 0) return true;
+    unsigned long vis = url_visible_chr(term, chars[prev].chr);
+    if (vis == UCSWIDE) return true;
+    if (vis <= 0x20 || vis == 0x7F) return true;
+    if (vis == '(' || vis == '[' || vis == '{' || vis == '<' ||
+        vis == '"' || vis == '\'' || vis == '`')
+        return true;
+    if (vis >= 0x21 && vis <= 0x7E)
+        return false;
+    return true;
+}
+
+static char *scan_url_at(Terminal *term, termchar *chars, int cols, int x)
+{
+    if (x < 0 || x >= cols) return NULL;
     if (x > 0 && chars[x].chr == UCSWIDE)
         x--;
     int url_start = -1;
     for (int pos = x; pos >= 0; pos--) {
         if (chars[pos].chr == UCSWIDE) continue;
-        if (url_has_scheme_at(chars, cols, pos)) {
-            url_start = pos;
-            break;
-        }
+        if (!url_has_scheme_at(term, chars, cols, pos)) continue;
+        if (!url_valid_start_boundary(term, chars, cols, pos)) continue;
+        url_start = pos;
+        break;
     }
     if (url_start < 0) return NULL;
-    int scheme_len = (url_chr_eq(chars[url_start+4].chr, 's') ? 8 : 7);
+    int scheme_len;
+    unsigned char c;
+    if (url_visible_ascii_at(term, chars, url_start+4, &c) && c == ':')
+        scheme_len = 7;
+    else
+        scheme_len = 8;
     if (url_start + scheme_len > x) return NULL;
-    int url_end = url_find_end(chars, cols, url_start);
-    url_end = url_trim_end(chars, url_start, url_end);
-    if (url_end <= url_start || x >= url_end) return NULL;
-    return url_build_string(chars, url_start, url_end);
+    int url_end = url_find_end(term, chars, cols, url_start, scheme_len);
+    url_end = url_trim_end(term, chars, url_start, url_end);
+    if (url_end <= url_start + scheme_len || x >= url_end) return NULL;
+    return url_build_string(term, chars, url_start, url_end);
 }
 
-static void mark_url_underlines(termchar *chars, int cols, bool *url_mask)
+static void mark_url_underlines(Terminal *term, termchar *chars, int cols,
+                                bool *url_mask)
 {
     int i = 0;
     while (i < cols) {
         if (chars[i].chr == UCSWIDE) { i++; continue; }
-        if (!url_has_scheme_at(chars, cols, i)) { i++; continue; }
-        int scheme_len = (url_chr_eq(chars[i+4].chr, 's') ? 8 : 7);
-        int end = i + scheme_len;
-        while (end < cols && !url_is_terminator(chars[end].chr))
-            end++;
-        end = url_trim_end(chars, i, end);
+        if (!url_has_scheme_at(term, chars, cols, i)) { i++; continue; }
+        if (!url_valid_start_boundary(term, chars, cols, i)) { i++; continue; }
+        int scheme_len;
+        unsigned char c;
+        if (url_visible_ascii_at(term, chars, i+4, &c) && c == ':')
+            scheme_len = 7;
+        else
+            scheme_len = 8;
+        int end = url_find_end(term, chars, cols, i, scheme_len);
+        end = url_trim_end(term, chars, i, end);
+        if (end <= i + scheme_len) {
+            i++;
+            continue;
+        }
         for (int j = i; j < end; j++)
             url_mask[j] = true;
         i = end;
@@ -6237,7 +6300,7 @@ char *term_url_at(Terminal *term, int x, int y)
     lchars = term_bidi_line(term, ldata, y);
     if (!lchars)
         lchars = ldata->chars;
-    url = scan_url_at(lchars, term->cols, x);
+    url = scan_url_at(term, lchars, term->cols, x);
     unlineptr(ldata);
     return url;
 }
@@ -6389,7 +6452,7 @@ static void do_paint(Terminal *term)
          */
         bool *url_underline = snewn(term->cols, bool);
         memset(url_underline, 0, term->cols * sizeof(bool));
-        mark_url_underlines(lchars, term->cols, url_underline);
+        mark_url_underlines(term, lchars, term->cols, url_underline);
 
         /*
          * First loop: work along the line deciding what we want
