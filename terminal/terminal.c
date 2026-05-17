@@ -6214,7 +6214,7 @@ static char *url_build_string(Terminal *term, termchar *chars, int start, int en
 }
 
 static bool url_valid_start_boundary(Terminal *term, termchar *chars,
-                                     int cols, int pos)
+                                     int pos)
 {
     if (pos <= 0) return true;
     int prev = pos - 1;
@@ -6241,7 +6241,7 @@ static char *scan_url_at(Terminal *term, termchar *chars, int cols, int x)
     for (int pos = x; pos >= 0; pos--) {
         if (chars[pos].chr == UCSWIDE) continue;
         if (!url_has_scheme_at(term, chars, cols, pos)) continue;
-        if (!url_valid_start_boundary(term, chars, cols, pos)) continue;
+        if (!url_valid_start_boundary(term, chars, pos)) continue;
         url_start = pos;
         break;
     }
@@ -6266,7 +6266,7 @@ static void mark_url_underlines(Terminal *term, termchar *chars, int cols,
     while (i < cols) {
         if (chars[i].chr == UCSWIDE) { i++; continue; }
         if (!url_has_scheme_at(term, chars, cols, i)) { i++; continue; }
-        if (!url_valid_start_boundary(term, chars, cols, i)) { i++; continue; }
+        if (!url_valid_start_boundary(term, chars, i)) { i++; continue; }
         int scheme_len;
         unsigned char c;
         if (url_visible_ascii_at(term, chars, i+4, &c) && c == ':')
