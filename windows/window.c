@@ -1127,7 +1127,7 @@ static void ensure_url_tooltip(WinGuiSeat *wgs)
     memset(&ti, 0, sizeof(ti));
     ti.cbSize = sizeof(ti);
     ti.hwnd = wgs->term_hwnd;
-    ti.uFlags = TTF_IDISHWND | TTF_TRACK;
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
     ti.uId = (UINT_PTR)wgs->term_hwnd;
     ti.lpszText = L"Ctrl + Click to Open Link";
     SendMessageW(wgs->url_tooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
@@ -1141,6 +1141,8 @@ static void show_url_tooltip(WinGuiSeat *wgs)
 
     POINT pt;
     GetCursorPos(&pt);
+    pt.x += 16;
+    pt.y += 20;
     SendMessageW(wgs->url_tooltip, TTM_TRACKPOSITION, 0,
                  MAKELPARAM(pt.x, pt.y));
 
@@ -1148,7 +1150,7 @@ static void show_url_tooltip(WinGuiSeat *wgs)
     memset(&ti, 0, sizeof(ti));
     ti.cbSize = sizeof(ti);
     ti.hwnd = wgs->term_hwnd;
-    ti.uFlags = TTF_IDISHWND | TTF_TRACK;
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
     ti.uId = (UINT_PTR)wgs->term_hwnd;
     SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
 }
@@ -1162,7 +1164,7 @@ static void hide_url_tooltip(WinGuiSeat *wgs)
     memset(&ti, 0, sizeof(ti));
     ti.cbSize = sizeof(ti);
     ti.hwnd = wgs->term_hwnd;
-    ti.uFlags = TTF_IDISHWND;
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
     ti.uId = (UINT_PTR)wgs->term_hwnd;
     SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
 }
@@ -2836,13 +2838,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                 TO_CHR_Y(Y_POS(lParam)));
             if (url) {
                 sfree(url);
-                if (!wgs->mouse_over_url) {
+
+                if (!wgs->url_cursor)
+                    wgs->url_cursor = LoadCursor(NULL, IDC_HAND);
+                SetCursor(wgs->url_cursor);
+
+                if (!wgs->mouse_over_url)
                     wgs->mouse_over_url = true;
-                    if (!wgs->url_cursor)
-                        wgs->url_cursor = LoadCursor(NULL, IDC_HAND);
-                    SetCursor(wgs->url_cursor);
-                    show_url_tooltip(wgs);
-                }
+
+                show_url_tooltip(wgs);
             } else {
                 if (wgs->mouse_over_url) {
                     wgs->mouse_over_url = false;
