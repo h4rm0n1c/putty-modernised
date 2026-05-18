@@ -113,6 +113,7 @@ struct WinGuiSeat {
 
     int dbltime, lasttime, lastact;
     Mouse_Button lastbtn;
+    unsigned long last_right_paste_time;
 
     bool send_raw_mouse;
     int wheel_accumulator;

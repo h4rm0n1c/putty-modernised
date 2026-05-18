@@ -2102,6 +2102,11 @@ static void click(WinGuiSeat *wgs, Mouse_Button b, int x, int y,
 /*
  * Translate a raw mouse button designation (LEFT, MIDDLE, RIGHT)
  * into a cooked one (SELECT, EXTEND, PASTE).
+ *
+ * In this fork, plain right-click always maps to PASTE. The
+ * xterm-style "right=extend, middle=paste" convention is dropped
+ * because OSC52 copy-out uses select/drag, and paste-back uses
+ * right-click.  Ctrl+RightClick opens the PuTTY context menu.
  */
 static Mouse_Button translate_button(WinGuiSeat *wgs, Mouse_Button button)
 {
@@ -2111,8 +2116,7 @@ static Mouse_Button translate_button(WinGuiSeat *wgs, Mouse_Button button)
         return conf_get_int(wgs->conf, CONF_mouse_is_xterm) == MOUSE_XTERM ?
             MBT_PASTE : MBT_EXTEND;
     if (button == MBT_RIGHT)
-        return conf_get_int(wgs->conf, CONF_mouse_is_xterm) == MOUSE_XTERM ?
-            MBT_EXTEND : MBT_PASTE;
+        return MBT_PASTE;
     return 0;                          /* shouldn't happen */
 }
 
@@ -2664,8 +2668,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
       case WM_MBUTTONUP:
       case WM_RBUTTONUP:
         if (message == WM_RBUTTONDOWN &&
-            ((wParam & MK_CONTROL) ||
-             (conf_get_int(wgs->conf, CONF_mouse_is_xterm) == MOUSE_WINDOWS))) {
+            (wParam & MK_CONTROL)) {
             POINT cursorpos;
 
             /* Just in case this happened in mid-select */
@@ -2759,6 +2762,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                 }
             }
 
+            /* Right-click paste guard: MK_LBUTTON means an active left
+             * drag is in progress; do not paste into the session. */
+            if (press && button == MBT_RIGHT && (wParam & MK_LBUTTON)) {
+                return 0;
+            }
+
             if (press) {
                 if (button == MBT_LEFT && (wParam & MK_CONTROL)) {
                     if (wgs->mouse_over_url) {
@@ -2774,6 +2783,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                         sfree(url);
                         return 0;
                     }
+                }
+                /* Debounce: plain right-click generates one paste per
+                 * deliberate gesture, not one per physical click.  Two
+                 * clicks inside the double-click window count as one. */
+                if (press && button == MBT_RIGHT && !(wParam & MK_CONTROL)) {
+                    unsigned long thistime = GetMessageTime();
+                    if (wgs->last_right_paste_time &&
+                        thistime - wgs->last_right_paste_time <
+                        (unsigned long)wgs->dbltime) {
+                        return 0;
+                    }
+                    wgs->last_right_paste_time = thistime;
                 }
                 click(wgs, button,
                       TO_CHR_X(X_POS(lParam)), TO_CHR_Y(Y_POS(lParam)),

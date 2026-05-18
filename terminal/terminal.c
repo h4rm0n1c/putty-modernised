@@ -3245,7 +3245,12 @@ static void do_osc52_clipboard(Terminal *term)
         return;
     }
 
-    wide = snewn(wide_len, wchar_t);
+    if (wide_len == INT_MAX) {
+        strbuf_free(decoded);
+        return;
+    }
+
+    wide = snewn(wide_len + 1, wchar_t);
     converted_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                         decoded->s, decoded->len,
                                         wide, wide_len);
@@ -3255,8 +3260,10 @@ static void do_osc52_clipboard(Terminal *term)
         return;
     }
 
+    wide[wide_len] = L'\0';
+
     win_clip_write(term->win, CLIP_SYSTEM, wide,
-                   NULL, NULL, wide_len, false);
+                   NULL, NULL, wide_len + 1, false);
 
     sfree(wide);
     strbuf_free(decoded);

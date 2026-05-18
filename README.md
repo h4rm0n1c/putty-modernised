@@ -25,6 +25,7 @@ pieces modern coding-agent workflows expect:
 |---------|-------------|----------------|
 | OSC52 clipboard write support | Lets remote terminal apps write to the local Windows clipboard | Useful for OpenCode, coding agents, and remote TUIs |
 | Clickable visible URLs | Underlines visible http/https URLs and opens them with Ctrl+LeftClick | OAuth/device-login links and long wrapped URLs become clickable |
+| Right-click paste | Plain right-click pastes the Windows clipboard into the remote session via PuTTY's normal paste path | Complements OSC52 copy-out (select/drag copies out, right-click pastes back) |
 | Ignore F13-F24 | Stops PuTTY from typing escape/input for F13-F24 | Plays nicely with Stream Deck, AutoHotkey, push-to-talk, and out-of-band hotkeys |
 
 ## Why this fork exists
@@ -74,8 +75,9 @@ Windows clipboard by emitting OSC 52 escape sequences.
   you do not want remote programs to modify your local clipboard.
 - Tested with OpenCode: selecting text in the remote TUI emits OSC52 on
   mouse-up and updates the local Windows clipboard. Paste back into the
-  remote session uses the normal user-triggered PuTTY paste path
-  (Shift+Insert or right-click paste).
+   remote session uses the normal user-triggered PuTTY paste path
+   (Shift+Insert or plain right-click). Ctrl+RightClick opens the
+   PuTTY context menu.
 
 **Test script:**
 
