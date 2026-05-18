@@ -1,24 +1,49 @@
-FORK EXPLAINER:
-This fork disables Putty's input handling for the high F keys,
-F13 to F24, on Microsoft Windows.
-Why?
-because I use buttons in that range for push to talk and other out of band
-type signalling and it's really annoying when putty types stuff when I
-didn't intend it to type anything. This is useful for streaming to prevent
-accidents and surprises.
+PuTTY fork for modern coding-agent workflows
+==============================================
 
-I built my own copy with mingw on linux and tested it on windows 10
-it was 3 lines of code to implement.
+This is a Windows-focused PuTTY fork with small quality-of-life features
+aimed at remote coding-agent, terminal TUI, Stream Deck, and AutoHotkey
+workflows.
 
-Known local build command for this fork:
+It keeps PuTTY's normal terminal behaviour, but adds the pieces that
+modern agent tools expect:
 
-  cmake --build build-win64 --target putty
+  - OSC52 clipboard write support
+  - Clickable visible URL support
+  - Ignore F13-F24 input on Windows
 
-Expected output binary:
+Feature summary
+---------------
 
-  build-win64/putty.exe
+| Feature | What it does | Why it matters |
+|---------|-------------|----------------|
+| OSC52 clipboard write support | Lets remote terminal apps write to the local Windows clipboard | Useful for OpenCode/coding agents and remote TUIs |
+| Clickable visible URLs | Underlines visible http/https URLs and opens them with Ctrl+LeftClick | OAuth/device-login links and long wrapped URLs become clickable |
+| Ignore F13-F24 | Stops PuTTY from typing escape/input for F13-F24 | Plays nicely with Stream Deck, AutoHotkey, push-to-talk, and out-of-band hotkeys |
 
-OSC 52 clipboard support:
+Why this fork exists
+--------------------
+
+Modern coding-agent workflows often run inside SSH sessions or terminal
+TUIs. Two things matter immediately:
+
+  1. The agent or remote TUI needs to copy useful text back to the local
+     machine.
+  2. The user needs to open long auth/OAuth/device-login URLs without
+     manually selecting and copying wrapped terminal text.
+
+This fork focuses on those two practical needs:
+
+  - OSC52 handles terminal-to-local clipboard writes.
+  - Clickable visible URLs handle auth links and other visible http/https
+    links.
+
+It deliberately avoids hidden-target hyperlink behaviour. If a URL opens,
+the URL text was visible in the terminal.
+
+OSC52 clipboard write support
+-----------------------------
+
 This fork supports OSC52 clipboard writes. When enabled (Terminal > Features
 > "Allow remote clipboard writes (OSC 52)"), programs on the remote host can
 set your local Windows clipboard by emitting OSC 52 escape sequences.
@@ -34,7 +59,7 @@ to modify your local clipboard. Default is enabled for convenience.
 Tested workflow:
 
   remote TUI/app copies out -> OSC52 write -> local Windows clipboard
-  local Windows clipboard pastes in -> normal PuTTY paste / bracketed paste
+  local Windows clipboard pastes into -> normal PuTTY paste / bracketed paste
 
 This has been tested with OpenCode: selecting text in the remote TUI emits
 OSC52 on mouse-up and updates the local Windows clipboard. Paste back into
@@ -52,21 +77,66 @@ original to this fork and reuses PuTTY's existing parser and clipboard
 abstractions, but the design deliberately follows established
 terminal-emulator behaviour for OSC52 clipboard handling.
 
-Clickable URL support:
+Clickable visible URL support
+-----------------------------
+
 This fork detects visible http:// and https:// URLs in terminal output.
-Detected URLs are underlined and can be opened with Ctrl+LeftClick.
+
+  - URLs are underlined in the terminal.
+  - Hovering over a URL changes the mouse cursor to a hand.
+  - A tooltip appears near the cursor: "Ctrl + Click to Open Link"
+  - Ctrl+LeftClick opens the URL with your default browser.
 
 Long soft-wrapped URLs are reconstructed across PuTTY soft wraps.
-UTF-8 / Unicode URL text is preserved and opened through the Windows
+UTF-8 / Unicode / IRI URL text is preserved and opened through the Windows
 wide-character API.
 
 Only URLs visibly present in the terminal are opened.
-OSC8 hidden-target hyperlinks are not supported.
+OSC8 hidden-target hyperlinks are deliberately not supported.
 file:// and custom URI schemes are not opened.
 
+Manual clickable URL tests are in:
 
-PuTTY source code README
-========================
+  contrib/test-clickable-url.sh
+
+Security:
+
+  This fork intentionally implements visible URL clicking, not OSC8 hidden
+  target links. The visible terminal URL is the authority.
+
+Ignore F13-F24 on Windows
+-------------------------
+
+F13-F24 virtual key codes received on Windows are silently ignored by
+PuTTY's input handling. This is useful when F13-F24 are mapped to hotkeys
+in Stream Deck, AutoHotkey, push-to-talk, or other out-of-band
+applications. Without this change, PuTTY would type unwanted input when
+those keys are pressed while the PuTTY window has focus.
+
+Build
+-----
+
+Local build command for this fork (cross-compile from Linux):
+
+  cmake --build build-win64 --target putty
+
+Expected output:
+
+  build-win64/putty.exe
+
+This repository keeps upstream PuTTY's CMake build system. See the upstream
+PuTTY section below for general build instructions.
+
+Testing
+-------
+
+Manual feature tests can be run inside a PuTTY session:
+
+  sh contrib/test-osc52.sh
+  sh contrib/test-clickable-url.sh
+
+Upstream PuTTY source README
+============================
 
 This is the README for the source code of PuTTY, a free Windows and
 Unix Telnet and SSH client.
