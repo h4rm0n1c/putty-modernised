@@ -6105,6 +6105,7 @@ typedef struct url_logical_line {
     size_t click_index;             /* text index of click point, or (size_t)-1 */
     int start_absy;                 /* first absolute y of logical line */
     int end_absy;                   /* last absolute y of logical line */
+    bool truncated;                 /* logical line exceeded MAX_VISIBLE_URL_CHARS */
 } url_logical_line;
 
 static void url_lline_clear(url_logical_line *lline)
@@ -6117,14 +6118,17 @@ static void url_lline_clear(url_logical_line *lline)
 static bool url_lline_append(url_logical_line *lline, wchar_t wc,
                              int abs_y, int x)
 {
+    if (lline->len + 1 >= MAX_VISIBLE_URL_CHARS) {
+        lline->truncated = true;
+        return false;
+    }
+
     sgrowarray(lline->text, lline->size, lline->len);
     lline->text[lline->len++] = wc;
     sgrowarray(lline->cells, lline->cellsize, lline->ncells);
     lline->cells[lline->ncells].y = abs_y;
     lline->cells[lline->ncells].x = x;
     lline->ncells++;
-    if (lline->len >= MAX_VISIBLE_URL_CHARS)
-        return false;
     return true;
 }
 
@@ -6157,6 +6161,7 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
     if (term->erase_to_scrollback && term->alt_which && term->alt_screen)
         altlines = term->alt_sblines;
     int min_abs_y = -altlines - sb_depth;
+    int max_abs_y = term->rows - 1;
 
     memset(lline, 0, sizeof(*lline));
     lline->click_index = (size_t)-1;
@@ -6176,16 +6181,18 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
 
     /* Walk downward while current line wraps to next */
     for (int i = 0; i < MAX_URL_SEARCH_LINES; i++) {
+        if (lline->end_absy >= max_abs_y)
+            break;
         termline *ld = lineptr(lline->end_absy);
         bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
         unlineptr(ld);
         if (!wraps) break;
         lline->end_absy++;
-        if (lline->end_absy > abs_y + term->rows + MAX_URL_SEARCH_LINES)
-            break;
     }
 
-    for (int ay = lline->start_absy; ay <= lline->end_absy; ay++) {
+    bool stop = false;
+
+    for (int ay = lline->start_absy; ay <= lline->end_absy && !stop; ay++) {
         termline *ldata = lineptr(ay);
         int sr = scr_y - (abs_y - ay);
 
@@ -6199,7 +6206,7 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
 
         int lcols = line_cols(term, ldata);
 
-        for (int x = 0; x < lcols; x++) {
+        for (int x = 0; x < lcols && !stop; x++) {
             if (ay == abs_y && x == click_x)
                 lline->click_index = lline->len;
 
@@ -6212,27 +6219,36 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
 #ifdef PLATFORM_IS_UTF16
             if (uc > 0x10000 && uc < 0x110000) {
                 if (!url_lline_append(lline,
-                    0xD800 | ((uc - 0x10000) >> 10), ay, x))
-                    goto lline_done;
+                    0xD800 | ((uc - 0x10000) >> 10), ay, x)) {
+                    stop = true;
+                    break;
+                }
                 if (!url_lline_append(lline,
-                    0xDC00 | ((uc - 0x10000) & 0x3FF), ay, x))
-                    goto lline_done;
+                    0xDC00 | ((uc - 0x10000) & 0x3FF), ay, x)) {
+                    stop = true;
+                    break;
+                }
             } else
 #endif
             {
-                if (!url_lline_append(lline, (wchar_t)uc, ay, x))
-                    goto lline_done;
+                if (!url_lline_append(lline, (wchar_t)uc, ay, x)) {
+                    stop = true;
+                    break;
+                }
             }
 
             /* Combining characters */
             int cc_idx = x;
             int cc_step = lchars[cc_idx].cc_next;
-            while (cc_step) {
+            while (cc_step && !stop) {
                 cc_idx += cc_step;
                 unsigned long uc_cc =
-                    lchars[cc_idx].chr & ~CSET_MASK;
-                if (!url_lline_append(lline, (wchar_t)uc_cc, ay, x))
-                    goto lline_done;
+                    url_cell_to_unicode(term, lchars[cc_idx].chr);
+                uc_cc &= ~CSET_MASK;
+                if (!url_lline_append(lline, (wchar_t)uc_cc, ay, x)) {
+                    stop = true;
+                    break;
+                }
                 cc_step = lchars[cc_idx].cc_next;
             }
         }
@@ -6240,10 +6256,10 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
         unlineptr(ldata);
     }
 
-lline_done:
-    if (lline->len > 0)
+    if (lline->len > 0) {
+        sgrowarray(lline->text, lline->size, lline->len);
         lline->text[lline->len] = L'\0';
-    else {
+    } else {
         sfree(lline->text);
         lline->text = NULL;
     }
@@ -6370,7 +6386,8 @@ wchar_t *term_url_at(Terminal *term, int x, int y)
 
     wchar_t *url = NULL;
     if (lline.text && lline.len > 0 &&
-        lline.click_index != (size_t)-1) {
+        lline.click_index != (size_t)-1 &&
+        !lline.truncated) {
         size_t us, ue;
         size_t from = 0;
         while (from < lline.len) {
@@ -6398,7 +6415,7 @@ static void mark_url_underlines(Terminal *term, int scr_y, bool *url_mask)
     url_logical_line lline;
     url_extract_logical_line(term, scr_y, -1, &lline);
 
-    if (!lline.text || lline.len == 0)
+    if (!lline.text || lline.len == 0 || lline.truncated)
         goto out;
 
     int abs_row = scr_y + term->disptop;

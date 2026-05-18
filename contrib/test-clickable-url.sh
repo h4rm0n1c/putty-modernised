@@ -17,7 +17,12 @@ echo "https://example.com/emoji/😀"
 echo ""
 
 echo "Long OAuth-style URL (should wrap and be underlined across rows):"
-long_oauth=$(printf 'a%.0s' $(seq 1 800))
+long_oauth=
+i=0
+while [ "$i" -lt 800 ]; do
+    long_oauth="${long_oauth}aaaaaaaaaaaaaaaa"
+    i=$((i + 16))
+done
 printf 'https://example.com/oauth?state=%s&code=%s\n' "$long_oauth" "$long_oauth"
 echo ""
 
