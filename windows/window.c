@@ -1112,6 +1112,61 @@ static void win_seat_update_specials_menu(Seat *seat)
     wgs->specials_menu = new_menu;
 }
 
+static void ensure_url_tooltip(WinGuiSeat *wgs)
+{
+    if (wgs->url_tooltip)
+        return;
+    wgs->url_tooltip = CreateWindowExW(
+        0, TOOLTIPS_CLASSW, NULL,
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        0, 0, 0, 0, wgs->term_hwnd, NULL, NULL, NULL);
+    if (!wgs->url_tooltip)
+        return;
+
+    TOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = wgs->term_hwnd;
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK;
+    ti.uId = (UINT_PTR)wgs->term_hwnd;
+    ti.lpszText = L"Ctrl + Click to Open Link";
+    SendMessageW(wgs->url_tooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+}
+
+static void show_url_tooltip(WinGuiSeat *wgs)
+{
+    ensure_url_tooltip(wgs);
+    if (!wgs->url_tooltip)
+        return;
+
+    POINT pt;
+    GetCursorPos(&pt);
+    SendMessageW(wgs->url_tooltip, TTM_TRACKPOSITION, 0,
+                 MAKELPARAM(pt.x, pt.y));
+
+    TOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = wgs->term_hwnd;
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK;
+    ti.uId = (UINT_PTR)wgs->term_hwnd;
+    SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+}
+
+static void hide_url_tooltip(WinGuiSeat *wgs)
+{
+    if (!wgs->url_tooltip)
+        return;
+
+    TOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = wgs->term_hwnd;
+    ti.uFlags = TTF_IDISHWND;
+    ti.uId = (UINT_PTR)wgs->term_hwnd;
+    SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+}
+
 static void update_mouse_pointer(WinGuiSeat *wgs)
 {
     LPTSTR curstype = NULL;
@@ -2708,6 +2763,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 
             if (press) {
                 if (button == MBT_LEFT && (wParam & MK_CONTROL)) {
+                    if (wgs->mouse_over_url) {
+                        wgs->mouse_over_url = false;
+                        hide_url_tooltip(wgs);
+                    }
                     wchar_t *url = term_url_at(
                         wgs->term,
                         TO_CHR_X(X_POS(lParam)),
@@ -2766,7 +2825,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                        TO_CHR_X(X_POS(lParam)),
                        TO_CHR_Y(Y_POS(lParam)), wParam & MK_SHIFT,
                        wParam & MK_CONTROL, is_alt_pressed());
+            if (wgs->mouse_over_url) {
+                wgs->mouse_over_url = false;
+                hide_url_tooltip(wgs);
+            }
         } else {
+            wchar_t *url = term_url_at(
+                wgs->term,
+                TO_CHR_X(X_POS(lParam)),
+                TO_CHR_Y(Y_POS(lParam)));
+            if (url) {
+                sfree(url);
+                if (!wgs->mouse_over_url) {
+                    wgs->mouse_over_url = true;
+                    if (!wgs->url_cursor)
+                        wgs->url_cursor = LoadCursor(NULL, IDC_HAND);
+                    SetCursor(wgs->url_cursor);
+                    show_url_tooltip(wgs);
+                }
+            } else {
+                if (wgs->mouse_over_url) {
+                    wgs->mouse_over_url = false;
+                    update_mouse_pointer(wgs);
+                    hide_url_tooltip(wgs);
+                }
+            }
             term_mouse(wgs->term, MBT_NOTHING, MBT_NOTHING, MA_MOVE,
                        TO_CHR_X(X_POS(lParam)),
                        TO_CHR_Y(Y_POS(lParam)), false,
@@ -2774,6 +2857,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
         }
         return 0;
       case WM_NCMOUSEMOVE:
+        if (wgs->mouse_over_url) {
+            wgs->mouse_over_url = false;
+            hide_url_tooltip(wgs);
+        }
         if (wgs->last_mousemove != WM_NCMOUSEMOVE ||
             wParam != wgs->last_wm_ncmousemove_wParam ||
             lParam != wgs->last_wm_ncmousemove_lParam) {
