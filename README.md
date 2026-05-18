@@ -1,4 +1,4 @@
-# PuTTY Modernise Fork
+# PuTTY Modernised Fork
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![PuTTY fork](https://img.shields.io/badge/PuTTY-fork-blue)
@@ -149,6 +149,13 @@ Manual feature tests can be run inside a PuTTY session:
 sh contrib/test-osc52.sh
 sh contrib/test-clickable-url.sh
 ```
+
+## Releases
+
+Tagged releases are built by GitHub Actions. Release assets include `putty.exe`,
+a zip package, SHA256 hashes, and a Defender scan log when available.
+
+Hashes prove artifact integrity, not malware innocence.
 
 ## Upstream PuTTY
 

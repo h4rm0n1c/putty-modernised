@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*-modernised"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. 0.83-modernised)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Determine release tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          "TAG=$tag" >> $env:GITHUB_ENV
+
+      - name: Configure CMake (Visual Studio 2022 x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build putty (Release)
+        run: cmake --build build --config Release --target putty
+
+      - name: Locate putty.exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter "putty.exe" build |
+                 Sort-Object FullName |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "putty.exe not found in build directory"
+            exit 1
+          }
+          Write-Output "Found at: $($exe.FullName)"
+          echo "PUTTY_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Stage files for zip
+        shell: pwsh
+        run: |
+          Copy-Item "$env:PUTTY_EXE" putty.exe
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item putty.exe staging\
+          Copy-Item README.md staging\
+          Copy-Item LICENCE staging\
+
+      - name: Create release zip
+        shell: pwsh
+        run: |
+          $zipName = "putty-$env:TAG-windows-x64.zip"
+          Compress-Archive -Path staging\* -DestinationPath $zipName
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Generate SHA256SUMS
+        shell: pwsh
+        run: |
+          $files = @("putty.exe", $env:ZIP_NAME)
+          $lines = foreach ($file in $files) {
+              $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash *$file"
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+
+      - name: Gather release assets for scan
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets
+          Copy-Item putty.exe release-assets\
+          Copy-Item "$env:ZIP_NAME" release-assets\
+          Copy-Item SHA256SUMS.txt release-assets\
+          Copy-Item README.md release-assets\
+
+      - name: Run Microsoft Defender scan
+        shell: pwsh
+        run: |
+          $defender = $null
+          $paths = @(
+            "$env:ProgramFiles\Windows Defender\MpCmdRun.exe",
+            "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe"
+          )
+          foreach ($p in $paths) {
+            $found = Get-ChildItem $p -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $defender = $found.FullName; break }
+          }
+
+          if (-not $defender) {
+            "Defender scan unavailable: MpCmdRun.exe not found on this runner." | Out-File defender-scan.txt
+            Write-Warning "MpCmdRun.exe not found; skipping Defender scan."
+          } else {
+            Write-Output "Found Defender at: $defender"
+            & $defender -Scan -ScanType 3 -File (Resolve-Path release-assets) 2>&1 | Out-File defender-scan.txt -Encoding utf8
+            $exitCode = $LASTEXITCODE
+            Get-Content defender-scan.txt
+            if ($exitCode -eq 2) {
+              Write-Error "Defender detected malware (exit code 2). See defender-scan.txt for details."
+              exit 1
+            } elseif ($exitCode -ne 0) {
+              Write-Warning "Defender scan returned exit code $exitCode (non-fatal)."
+            }
+          }
+
+      - name: Upload raw putty.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: putty-exe
+          path: putty.exe
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $tag = "$env:TAG"
+          $baseVersion = $tag -replace '-modernised$', ''
+          $sha = (git rev-parse HEAD).Trim()
+          $date = (Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          $hashes = Get-Content SHA256SUMS.txt -Raw
+
+          @"
+          ## PuTTY Modernised $tag
+
+          **Tag:** $tag  
+          **Base PuTTY version:** $baseVersion  
+          **Build:** $date  
+          **Commit:** $sha
+
+          ### Features
+
+          - OSC52 clipboard write support
+          - Clickable visible URL support
+          - UTF-8 / IRI visible URLs
+          - Soft-wrapped OAuth/device-login URL reconstruction
+          - F13-F24 ignore behaviour
+
+          ### Security model
+
+          - OSC52 write-only — no clipboard read/query
+          - Visible URLs only — no OSC8 hidden-target links
+          - No file:// or custom URI schemes opened
+
+          ### SHA256 checksums
+
+          ```
+          $hashes
+          ```
+
+          ### Defender scan
+
+          The Defender scan log is attached below. This is evidence from one
+          scanner, not proof that the binary is safe. Verify SHA256 hashes and
+          exercise normal caution with any downloaded executable.
+          "@ | Out-File release-notes.md -Encoding utf8
+
+      - name: Create GitHub Release
+        shell: pwsh
+        run: |
+          gh release create "$env:TAG" `
+            --title "PuTTY Modernised $env:TAG" `
+            --notes-file release-notes.md `
+            putty.exe `
+            "$env:ZIP_NAME" `
+            SHA256SUMS.txt `
+            defender-scan.txt `
+            release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
