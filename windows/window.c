@@ -1133,9 +1133,10 @@ static void ensure_url_tooltip(WinGuiSeat *wgs)
     SendMessageW(wgs->url_tooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 }
 
-static void show_url_tooltip(WinGuiSeat *wgs)
+static void position_url_tooltip(WinGuiSeat *wgs)
 {
-    ensure_url_tooltip(wgs);
+    if (!wgs->url_tooltip)
+        ensure_url_tooltip(wgs);
     if (!wgs->url_tooltip)
         return;
 
@@ -1145,18 +1146,12 @@ static void show_url_tooltip(WinGuiSeat *wgs)
     pt.y += 20;
     SendMessageW(wgs->url_tooltip, TTM_TRACKPOSITION, 0,
                  MAKELPARAM(pt.x, pt.y));
-
-    TOOLINFOW ti;
-    memset(&ti, 0, sizeof(ti));
-    ti.cbSize = sizeof(ti);
-    ti.hwnd = wgs->term_hwnd;
-    ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
-    ti.uId = (UINT_PTR)wgs->term_hwnd;
-    SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
 }
 
-static void hide_url_tooltip(WinGuiSeat *wgs)
+static void activate_url_tooltip(WinGuiSeat *wgs, bool active)
 {
+    if (!wgs->url_tooltip && active)
+        ensure_url_tooltip(wgs);
     if (!wgs->url_tooltip)
         return;
 
@@ -1166,7 +1161,8 @@ static void hide_url_tooltip(WinGuiSeat *wgs)
     ti.hwnd = wgs->term_hwnd;
     ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
     ti.uId = (UINT_PTR)wgs->term_hwnd;
-    SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+    SendMessageW(wgs->url_tooltip, TTM_TRACKACTIVATE,
+                 active ? TRUE : FALSE, (LPARAM)&ti);
 }
 
 static void update_mouse_pointer(WinGuiSeat *wgs)
@@ -2767,7 +2763,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                 if (button == MBT_LEFT && (wParam & MK_CONTROL)) {
                     if (wgs->mouse_over_url) {
                         wgs->mouse_over_url = false;
-                        hide_url_tooltip(wgs);
+                        activate_url_tooltip(wgs, false);
                     }
                     wchar_t *url = term_url_at(
                         wgs->term,
@@ -2829,7 +2825,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                        wParam & MK_CONTROL, is_alt_pressed());
             if (wgs->mouse_over_url) {
                 wgs->mouse_over_url = false;
-                hide_url_tooltip(wgs);
+                activate_url_tooltip(wgs, false);
             }
         } else {
             wchar_t *url = term_url_at(
@@ -2843,15 +2839,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                     wgs->url_cursor = LoadCursor(NULL, IDC_HAND);
                 SetCursor(wgs->url_cursor);
 
-                if (!wgs->mouse_over_url)
-                    wgs->mouse_over_url = true;
+                position_url_tooltip(wgs);
 
-                show_url_tooltip(wgs);
+                if (!wgs->mouse_over_url) {
+                    wgs->mouse_over_url = true;
+                    activate_url_tooltip(wgs, true);
+                }
             } else {
                 if (wgs->mouse_over_url) {
                     wgs->mouse_over_url = false;
                     update_mouse_pointer(wgs);
-                    hide_url_tooltip(wgs);
+                    activate_url_tooltip(wgs, false);
                 }
             }
             term_mouse(wgs->term, MBT_NOTHING, MBT_NOTHING, MA_MOVE,
@@ -2863,7 +2861,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
       case WM_NCMOUSEMOVE:
         if (wgs->mouse_over_url) {
             wgs->mouse_over_url = false;
-            hide_url_tooltip(wgs);
+            activate_url_tooltip(wgs, false);
         }
         if (wgs->last_mousemove != WM_NCMOUSEMOVE ||
             wParam != wgs->last_wm_ncmousemove_wParam ||
