@@ -26,6 +26,14 @@ done
 printf 'https://example.com/oauth?state=%s&code=%s\n' "$long_oauth" "$long_oauth"
 echo ""
 
+echo "Indented hard-wrapped OAuth-style URL (should be joined without spaces):"
+printf '%s\n' \
+  'https://accounts.example.com/o/oauth2/auth?access_type=offline&client_id=demo.apps.example.com&code_chall' \
+  ' enge=VTQXG3wTppZTI5m4sO5Gfa7Q3LrMyGT1x-NoklLiwQo&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.example%2Foauth-callback&re' \
+  ' sponse_type=code&scope=https%3A%2F%2Fwww.exampleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.exampleapis.com%2Fauth%2Fuserinfo.email+open' \
+  ' id&state=demo-state'
+echo ""
+
 echo "Scheme-only (should NOT be underlined/clickable):"
 echo "http://"
 echo "https://"

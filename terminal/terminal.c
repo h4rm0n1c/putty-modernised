@@ -6100,7 +6100,10 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
 typedef struct url_cellref {
     int y;                          /* absolute terminal y */
     int x;                          /* displayed column */
+    unsigned flags;                 /* URL_CELLF_* */
 } url_cellref;
+
+#define URL_CELLF_HARDWRAP_SPACE 0x0001
 
 typedef struct url_logical_line {
     wchar_t *text;                  /* visible Unicode text of logical line */
@@ -6123,7 +6126,7 @@ static void url_lline_clear(url_logical_line *lline)
 }
 
 static bool url_lline_append(url_logical_line *lline, wchar_t wc,
-                             int abs_y, int x)
+                             int abs_y, int x, unsigned flags)
 {
     if (lline->len + 1 >= MAX_VISIBLE_URL_CHARS) {
         lline->truncated = true;
@@ -6135,6 +6138,7 @@ static bool url_lline_append(url_logical_line *lline, wchar_t wc,
     sgrowarray(lline->cells, lline->cellsize, lline->ncells);
     lline->cells[lline->ncells].y = abs_y;
     lline->cells[lline->ncells].x = x;
+    lline->cells[lline->ncells].flags = flags;
     lline->ncells++;
     return true;
 }
@@ -6159,6 +6163,82 @@ static unsigned long url_cell_to_unicode(Terminal *term, unsigned long chr)
     return chr;
 }
 
+static bool url_is_body_char(wchar_t wc);
+
+static bool url_is_space(wchar_t wc)
+{
+    return wc <= 0x20 || wc == 0x7F;
+}
+
+static bool url_line_wraps_to_next(Terminal *term, int abs_y)
+{
+    termline *ld = lineptr(abs_y);
+    bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
+    unlineptr(ld);
+    return wraps;
+}
+
+static bool url_line_ends_with_body_char(Terminal *term, int abs_y)
+{
+    termline *ld = lineptr(abs_y);
+    bool found = false;
+    int lcols = line_cols(term, ld);
+
+    for (int x = lcols; x-- > 0 ;) {
+        if (ld->chars[x].chr == UCSWIDE)
+            continue;
+
+        unsigned long uc = url_cell_to_unicode(term, ld->chars[x].chr);
+        uc &= ~CSET_MASK;
+
+        if (url_is_space((wchar_t)uc))
+            continue;
+
+        found = url_is_body_char((wchar_t)uc);
+        break;
+    }
+
+    unlineptr(ld);
+    return found;
+}
+
+static bool url_line_starts_with_indented_body_char(Terminal *term, int abs_y)
+{
+    termline *ld = lineptr(abs_y);
+    bool found = false;
+    bool saw_indent = false;
+    int lcols = line_cols(term, ld);
+
+    for (int x = 0; x < lcols; x++) {
+        if (ld->chars[x].chr == UCSWIDE)
+            continue;
+
+        unsigned long uc = url_cell_to_unicode(term, ld->chars[x].chr);
+        uc &= ~CSET_MASK;
+
+        if (url_is_space((wchar_t)uc)) {
+            saw_indent = true;
+            continue;
+        }
+
+        found = saw_indent && url_is_body_char((wchar_t)uc);
+        break;
+    }
+
+    unlineptr(ld);
+    return found;
+}
+
+static bool url_hardwrap_continues(Terminal *term, int first_abs_y,
+                                   int second_abs_y)
+{
+    if (url_line_wraps_to_next(term, first_abs_y))
+        return true;
+
+    return url_line_ends_with_body_char(term, first_abs_y) &&
+        url_line_starts_with_indented_body_char(term, second_abs_y);
+}
+
 static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
                                      url_logical_line *lline)
 {
@@ -6175,25 +6255,22 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
     lline->start_absy = abs_y;
     lline->end_absy = abs_y;
 
-    /* Walk upward while previous line wraps forward */
+    /* Walk upward while previous line continues this one */
     for (int i = 0; i < MAX_URL_SEARCH_LINES; i++) {
         int prev = lline->start_absy - 1;
         if (prev < min_abs_y) break;
-        termline *ld = lineptr(prev);
-        bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
-        unlineptr(ld);
-        if (!wraps) break;
+        if (!url_hardwrap_continues(term, prev, lline->start_absy))
+            break;
         lline->start_absy = prev;
     }
 
-    /* Walk downward while current line wraps to next */
+    /* Walk downward while current line continues to next */
     for (int i = 0; i < MAX_URL_SEARCH_LINES; i++) {
         if (lline->end_absy >= max_abs_y)
             break;
-        termline *ld = lineptr(lline->end_absy);
-        bool wraps = (ld->lattr & LATTR_WRAPPED) != 0;
-        unlineptr(ld);
-        if (!wraps) break;
+        if (!url_hardwrap_continues(term, lline->end_absy,
+                                    lline->end_absy + 1))
+            break;
         lline->end_absy++;
     }
 
@@ -6212,6 +6289,9 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
             lchars = ldata->chars;
 
         int lcols = line_cols(term, ldata);
+        bool hardwrap_space_row =
+            ay > lline->start_absy && !url_line_wraps_to_next(term, ay - 1);
+        bool in_line_leading_space = true;
 
         for (int x = 0; x < lcols && !stop; x++) {
             if (ay == abs_y && x == click_x)
@@ -6222,23 +6302,29 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
 
             unsigned long uc = url_cell_to_unicode(term, lchars[x].chr);
             uc &= ~CSET_MASK;
+            unsigned flags = 0;
+            if (hardwrap_space_row && in_line_leading_space &&
+                url_is_space((wchar_t)uc))
+                flags |= URL_CELLF_HARDWRAP_SPACE;
+            else if (!url_is_space((wchar_t)uc))
+                in_line_leading_space = false;
 
 #ifdef PLATFORM_IS_UTF16
             if (uc > 0x10000 && uc < 0x110000) {
                 if (!url_lline_append(lline,
-                    0xD800 | ((uc - 0x10000) >> 10), ay, x)) {
+                    0xD800 | ((uc - 0x10000) >> 10), ay, x, flags)) {
                     stop = true;
                     break;
                 }
                 if (!url_lline_append(lline,
-                    0xDC00 | ((uc - 0x10000) & 0x3FF), ay, x)) {
+                    0xDC00 | ((uc - 0x10000) & 0x3FF), ay, x, flags)) {
                     stop = true;
                     break;
                 }
             } else
 #endif
             {
-                if (!url_lline_append(lline, (wchar_t)uc, ay, x)) {
+                if (!url_lline_append(lline, (wchar_t)uc, ay, x, flags)) {
                     stop = true;
                     break;
                 }
@@ -6252,7 +6338,7 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
                 unsigned long uc_cc =
                     url_cell_to_unicode(term, lchars[cc_idx].chr);
                 uc_cc &= ~CSET_MASK;
-                if (!url_lline_append(lline, (wchar_t)uc_cc, ay, x)) {
+                if (!url_lline_append(lline, (wchar_t)uc_cc, ay, x, 0)) {
                     stop = true;
                     break;
                 }
@@ -6330,10 +6416,61 @@ static size_t url_trim_end_w(wchar_t *text, size_t start, size_t end)
     return end;
 }
 
-static bool url_find_next(wchar_t *text, size_t len,
+static bool url_is_ignored_url_char(url_logical_line *lline, size_t pos)
+{
+    return pos < lline->ncells &&
+        (lline->cells[pos].flags & URL_CELLF_HARDWRAP_SPACE);
+}
+
+static bool url_has_query_or_fragment(wchar_t *text, size_t start, size_t end)
+{
+    for (size_t i = start; i < end; i++)
+        if (text[i] == L'?' || text[i] == L'#')
+            return true;
+    return false;
+}
+
+static bool url_continuation_segment_looks_urlish(
+    url_logical_line *lline, size_t pos)
+{
+    while (pos < lline->len && url_is_ignored_url_char(lline, pos))
+        pos++;
+
+    while (pos < lline->len &&
+           !url_is_ignored_url_char(lline, pos) &&
+           url_is_body_char(lline->text[pos])) {
+        wchar_t wc = lline->text[pos++];
+        if (wc == L'=' || wc == L'&' || wc == L'%' || wc == L'+' ||
+            wc == L'?' || wc == L'#' || wc == L'/')
+            return true;
+    }
+
+    return false;
+}
+
+static bool url_can_skip_hardwrap_spaces(url_logical_line *lline,
+                                         size_t start, size_t pos)
+{
+    if (pos == 0 || pos >= lline->len ||
+        !url_is_ignored_url_char(lline, pos) ||
+        !url_is_body_char(lline->text[pos - 1]) ||
+        !url_has_query_or_fragment(lline->text, start, pos) ||
+        !url_continuation_segment_looks_urlish(lline, pos))
+        return false;
+
+    while (pos < lline->len && url_is_ignored_url_char(lline, pos))
+        pos++;
+
+    return pos < lline->len && url_is_body_char(lline->text[pos]);
+}
+
+static bool url_find_next(url_logical_line *lline,
                           size_t from, size_t *url_start_out,
                           size_t *url_end_out)
 {
+    wchar_t *text = lline->text;
+    size_t len = lline->len;
+
     for (size_t i = from; i + 7 <= len; i++) {
         if (text[i] != L'h' && text[i] != L'H')
             continue;
@@ -6358,8 +6495,16 @@ static bool url_find_next(wchar_t *text, size_t len,
             continue;
 
         size_t e = i + slen;
-        while (e < len && url_is_body_char(text[e]))
-            e++;
+        while (e < len) {
+            if (url_is_body_char(text[e])) {
+                e++;
+            } else if (url_can_skip_hardwrap_spaces(lline, i, e)) {
+                while (e < len && url_is_ignored_url_char(lline, e))
+                    e++;
+            } else {
+                break;
+            }
+        }
         e = url_trim_end_w(text, i, e);
 
         if (e > i + slen) {
@@ -6398,14 +6543,21 @@ wchar_t *term_url_at(Terminal *term, int x, int y)
         size_t us, ue;
         size_t from = 0;
         while (from < lline.len) {
-            if (!url_find_next(lline.text, lline.len, from, &us, &ue))
+            if (!url_find_next(&lline, from, &us, &ue))
                 break;
             if (lline.click_index >= us &&
-                lline.click_index < ue) {
-                size_t urllen = ue - us;
+                lline.click_index < ue &&
+                !url_is_ignored_url_char(&lline, lline.click_index)) {
+                size_t urllen = 0;
+                for (size_t ti = us; ti < ue; ti++)
+                    if (!url_is_ignored_url_char(&lline, ti))
+                        urllen++;
+
                 url = snewn(urllen + 1, wchar_t);
-                memcpy(url, lline.text + us,
-                       urllen * sizeof(wchar_t));
+                size_t ui = 0;
+                for (size_t ti = us; ti < ue; ti++)
+                    if (!url_is_ignored_url_char(&lline, ti))
+                        url[ui++] = lline.text[ti];
                 url[urllen] = L'\0';
                 break;
             }
@@ -6430,11 +6582,12 @@ static void mark_url_underlines(Terminal *term, int scr_y, bool *url_mask)
 
     while (from < lline.len) {
         size_t us, ue;
-        if (!url_find_next(lline.text, lline.len, from, &us, &ue))
+        if (!url_find_next(&lline, from, &us, &ue))
             break;
 
         for (size_t ti = us; ti < ue && ti < lline.ncells; ti++) {
-            if (lline.cells[ti].y == abs_row &&
+            if (!url_is_ignored_url_char(&lline, ti) &&
+                lline.cells[ti].y == abs_row &&
                 lline.cells[ti].x >= 0 &&
                 lline.cells[ti].x < term->cols)
                 url_mask[lline.cells[ti].x] = true;

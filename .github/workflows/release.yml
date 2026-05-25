@@ -147,6 +147,15 @@ jobs:
           - Soft-wrapped OAuth/device-login URL reconstruction
           - F13-F24 ignore behaviour
 
+          ### Changes in this rebuilt release
+
+          - Fixed clickable visible URL reconstruction for OAuth links that are
+            hard-wrapped by a CLI with indented continuation lines, such as
+            split `code_chall` / `enge`, `re` / `sponse_type`, and
+            `open` / `id` query fields.
+          - Continuation indentation is no longer included in the URL opened by
+            Ctrl+LeftClick.
+
           ### Security model
 
           - OSC52 write-only — no clipboard read/query
