@@ -151,8 +151,8 @@ jobs:
 
           - Fixed clickable visible URL reconstruction for OAuth links that are
             hard-wrapped by a CLI with indented continuation lines, such as
-            split `code_chall` / `enge`, `re` / `sponse_type`, and
-            `open` / `id` query fields.
+            split code_chall / enge, re / sponse_type, and open / id query
+            fields.
           - Continuation indentation is no longer included in the URL opened by
             Ctrl+LeftClick.
 
