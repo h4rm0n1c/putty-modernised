@@ -6750,6 +6750,20 @@ static void do_paint(Terminal *term)
         mark_url_underlines(term, i, url_underline);
 
         /*
+         * Re-fetch lchars and backward: mark_url_underlines calls
+         * url_extract_logical_line which may call term_bidi_line for
+         * other rows, which can resize the bidi cache and invalidate
+         * our pointers obtained above.
+         */
+        lchars = term_bidi_line(term, ldata, i);
+        if (lchars) {
+            backward = term->post_bidi_cache[i].backward;
+        } else {
+            lchars = ldata->chars;
+            backward = NULL;
+        }
+
+        /*
          * First loop: work along the line deciding what we want
          * each character cell to look like.
          */
