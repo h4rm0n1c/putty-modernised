@@ -155,6 +155,13 @@ jobs:
             fields.
           - Continuation indentation is no longer included in the URL opened by
             Ctrl+LeftClick.
+          - Fixed use-after-free of bidi cache pointers in the URL underline
+            paint loop that caused rendering corruption when visible URLs were
+            displayed.
+          - Guarded Windows-only OSC52 clipboard code (winnls.h,
+            MultiByteToWideChar) behind _WINDOWS for cross-platform builds.
+          - Fixed hard-wrap space-row detection in URL extraction to prevent
+            false positives on blank or space-only trailing rows.
 
           ### Security model
 
