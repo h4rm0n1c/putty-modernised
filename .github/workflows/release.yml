@@ -188,6 +188,7 @@ jobs:
           gh release create "$env:TAG" `
             --title "PuTTY Modernised $env:TAG" `
             --notes-file release-notes.md `
+            --clobber `
             putty.exe `
             "$env:ZIP_NAME" `
             SHA256SUMS.txt `
