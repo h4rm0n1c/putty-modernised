@@ -12,7 +12,9 @@
 #include <assert.h>
 #include "putty.h"
 #include "terminal.h"
+#ifdef _WINDOWS
 #include <winnls.h>
+#endif
 
 #define VT52_PLUS
 
@@ -3238,6 +3240,7 @@ static void do_osc52_clipboard(Terminal *term)
         return;
     }
 
+#ifdef _WINDOWS
     wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                    decoded->s, decoded->len, NULL, 0);
     if (wide_len <= 0) {
@@ -3266,6 +3269,7 @@ static void do_osc52_clipboard(Terminal *term)
                    NULL, NULL, wide_len + 1, false);
 
     sfree(wide);
+#endif
     strbuf_free(decoded);
 }
 
@@ -6290,7 +6294,9 @@ static void url_extract_logical_line(Terminal *term, int scr_y, int click_x,
 
         int lcols = line_cols(term, ldata);
         bool hardwrap_space_row =
-            ay > lline->start_absy && !url_line_wraps_to_next(term, ay - 1);
+            ay > lline->start_absy &&
+            (!url_line_wraps_to_next(term, ay - 1) &&
+             url_line_ends_with_body_char(term, ay - 1));
         bool in_line_leading_space = true;
 
         for (int x = 0; x < lcols && !stop; x++) {
